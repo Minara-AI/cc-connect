@@ -69,9 +69,11 @@ fn run() -> Result<()> {
     // Step 6: render via cc-connect-core::hook_format. The 8 KiB iterative
     // truncation is handled internally; PROTOCOL.md §7.3 step 6 spec.
     let nicknames = read_nicknames();
+    let rooms_base = home_dir().join(".cc-connect").join("rooms");
     let output = hook_format::render(&hook_format::HookInput {
         rooms: &rooms,
         nicknames: &nicknames,
+        rooms_base: &rooms_base,
     });
 
     // Step 7: write to stdout. Empty output = exit 0 (no marker, no boilerplate).

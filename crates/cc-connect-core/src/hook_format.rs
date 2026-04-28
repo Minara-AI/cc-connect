@@ -11,8 +11,9 @@
 //!   `[chatroom] (N older messages skipped to fit)\n` marker fits. The fit
 //!   check is iterative — the marker's digit count grows with N.
 
-use crate::message::Message;
+use crate::message::{Message, KIND_FILE_DROP};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// PROTOCOL.md §7.3 step 6 hard cap. ADR-0004 / Spike 0 verified.
 pub const HOOK_OUTPUT_BUDGET: usize = 8 * 1024;
@@ -25,6 +26,10 @@ pub struct HookInput<'a> {
     pub rooms: &'a HashMap<String, Vec<Message>>,
     /// Pubkey → nickname map, typically `~/.cc-connect/nicknames.json`.
     pub nicknames: &'a HashMap<String, String>,
+    /// Base directory under which Room state lives (typically
+    /// `~/.cc-connect/rooms/`). Used to compute `@file:` paths for
+    /// `file_drop` Messages: `<rooms_base>/<topic>/files/<id>-<body>`.
+    pub rooms_base: &'a Path,
 }
 
 /// Render the Hook's stdout payload. Always returns a complete (possibly
@@ -46,7 +51,7 @@ pub fn render(input: &HookInput) -> String {
 
     let lines: Vec<String> = entries
         .iter()
-        .map(|(topic, msg)| format_line(topic, msg, input.nicknames, multi_room))
+        .map(|(topic, msg)| format_line(topic, msg, input.nicknames, input.rooms_base, multi_room))
         .collect();
 
     fit_to_budget(lines, HOOK_OUTPUT_BUDGET)
@@ -56,16 +61,31 @@ fn format_line(
     topic: &str,
     msg: &Message,
     nicknames: &HashMap<String, String>,
+    rooms_base: &Path,
     multi_room: bool,
 ) -> String {
     let nick = nick_for(nicknames, &msg.author);
     let time = format_utc_hhmm(msg.ts);
-    let body = sanitize_body(&msg.body);
-    if multi_room {
+    let prefix = if multi_room {
         let tag = topic.chars().take(6).collect::<String>().to_ascii_lowercase();
-        format!("[chatroom {tag} @{nick} {time}Z] {body}\n")
+        format!("[chatroom {tag} @{nick} {time}Z]")
     } else {
-        format!("[chatroom @{nick} {time}Z] {body}\n")
+        format!("[chatroom @{nick} {time}Z]")
+    };
+
+    if msg.kind == KIND_FILE_DROP {
+        // Path the chat process saved the attachment under: rooms_base/<topic>/files/<id>-<filename>.
+        // The chat receiver writes this on gossip arrival; the file is on disk by the time the
+        // hook fires (PROTOCOL §8 active-rooms gating).
+        let filename = sanitize_body(&msg.body);
+        let local_path = rooms_base
+            .join(topic)
+            .join("files")
+            .join(format!("{}-{}", msg.id, filename));
+        format!("{prefix} dropped {filename} @file:{}\n", local_path.display())
+    } else {
+        let body = sanitize_body(&msg.body);
+        format!("{prefix} {body}\n")
     }
 }
 
@@ -190,7 +210,7 @@ mod tests {
     fn empty_rooms_renders_empty_string() {
         let nm = nicks(&[]);
         let rooms = HashMap::new();
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert_eq!(out, "");
     }
 
@@ -198,7 +218,7 @@ mod tests {
     fn single_room_no_messages_renders_empty() {
         let nm = nicks(&[]);
         let rooms = one_room("a1b2c3d4e5f6", vec![]);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert_eq!(out, "");
     }
 
@@ -213,7 +233,7 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "alice")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "hi")];
         let rooms = one_room("a1b2c3d4e5f6", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert_eq!(out, "[chatroom @alice 00:00Z] hi\n");
     }
 
@@ -222,7 +242,7 @@ mod tests {
         let nm = nicks(&[]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "x")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert_eq!(out, "[chatroom @hnvcppgo 00:00Z] x\n");
     }
 
@@ -232,7 +252,7 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, bad_nick)]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "x")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         // \n→?, \t→?, é (2 bytes 0xc3 0xa9) → 2× '?' per byte-for-byte rule.
         assert!(out.contains("@al?ice???"), "got: {out}");
     }
@@ -243,7 +263,7 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "x")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, body_raw)];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert!(
             out.contains("a b c é d"),
             "tab+DEL→space, é preserved: got {out}"
@@ -276,7 +296,7 @@ mod tests {
             "bbbbbb222222".to_string(),
             vec![make(&ulid(2), B_PUBKEY, 0, "from B")],
         );
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         let expected =
             "[chatroom aaaaaa @alice 00:00Z] from A\n\
              [chatroom bbbbbb @bob 00:00Z] from B\n";
@@ -298,7 +318,7 @@ mod tests {
             "bbbbbb".to_string(),
             vec![make(&ulid(2), B_PUBKEY, 0, "B middle")],
         );
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("A first"));
@@ -318,7 +338,7 @@ mod tests {
             msgs.push(make(&id, A_PUBKEY, 0, &body));
         }
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
 
         assert!(out.len() <= HOOK_OUTPUT_BUDGET, "MUST fit within 8 KiB; got {}", out.len());
         assert!(
@@ -352,7 +372,7 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "alice")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "small")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert!(!out.starts_with("[chatroom] ("));
     }
 
@@ -361,7 +381,39 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "alice")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm });
+        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms") });
         assert_eq!(out, "[chatroom @alice 00:00Z] \n");
+    }
+
+    #[test]
+    fn file_drop_renders_at_file_reference_pointing_at_attachment() {
+        // file_drop Messages render as `dropped <filename> @file:<path>` so
+        // Claude Code reads the bytes via its existing @file: convention.
+        let nm = nicks(&[(A_PUBKEY, "alice")]);
+        let bytes = b"<svg/>".to_vec();
+        let id = ulid(1);
+        let drop = Message::new_file_drop(
+            &id,
+            A_PUBKEY.to_string(),
+            0,
+            "design.svg".to_string(),
+            &bytes,
+        )
+        .unwrap();
+        let topic = "aaaa11";
+        let rooms = one_room(topic, vec![drop.clone()]);
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/var/tmp/cc-test/rooms"),
+        });
+        let expected_path = format!(
+            "/var/tmp/cc-test/rooms/{topic}/files/{}-design.svg",
+            drop.id
+        );
+        assert_eq!(
+            out,
+            format!("[chatroom @alice 00:00Z] dropped design.svg @file:{expected_path}\n")
+        );
     }
 }

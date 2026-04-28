@@ -110,6 +110,17 @@ Type to send. Ctrl-C / EOF to leave.
 
 Type messages. Press enter to send.
 
+### Drop a file (v0.2-alpha)
+
+```
+> /drop ./design.svg
+[chat] dropped design.svg (148 bytes)
+```
+
+`/drop <path>` reads the file inline, broadcasts it via gossip, and saves it locally on every peer's machine. Both peers' Claudes see it as `@file:<path>` on the next prompt — Claude Code reads it via its native file-attach convention.
+
+**v0.2-alpha limit: 32 KB binary** (small images, code snippets, markdown). Larger files will land in v0.2.1 via `iroh-blobs`.
+
 ### What Claude sees
 
 While `cc-connect chat …` is running, every prompt you send to Claude Code in another pane has the recent unread chat lines spliced into Claude's context. Claude doesn't know there's a chat — to it, the lines just look like extra prompt context tagged `[chatroom @nick HH:MMZ] body`.

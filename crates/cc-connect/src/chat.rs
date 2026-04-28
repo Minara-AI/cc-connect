@@ -109,7 +109,8 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
             // no one to ask. Skip silently.
             None
         } else {
-            match try_backfill_from(&endpoint, first_peer, None, &log_path).await {
+            let files_dir = files_dir_for(&topic_id_hex);
+            match try_backfill_from(&endpoint, first_peer, None, &log_path, &files_dir).await {
                 BackfillOutcome::Filled { appended } if appended > 0 => {
                     Some(format!(
                         "[chatroom] (backfilled {appended} message{} from peer)",
@@ -149,8 +150,11 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
 
     // 9. Spawn gossip listener task. It writes incoming Messages to the same
     //    log file (with its own File handle); fcntl + single-syscall write
-    //    keep concurrent appends safe.
+    //    keep concurrent appends safe. For file_drop Messages it also writes
+    //    the decoded attachment to the per-Room `files/` directory, so the
+    //    hook can `@file:` the local path on the next prompt.
     let listener_log_path = log_path.clone();
+    let listener_files_dir = files_dir_for(&topic_id_hex);
     let our_pubkey = pubkey_string.clone();
     let listener_handle = tokio::task::spawn(async move {
         let mut listener_log = match log_io::open_or_create_log(&listener_log_path) {
@@ -184,6 +188,14 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
             if msg.author == our_pubkey {
                 continue;
             }
+            // For file_drop, materialise the attachment to disk so the
+            // hook's `@file:` path resolves on the next Claude prompt.
+            if msg.kind == cc_connect_core::message::KIND_FILE_DROP {
+                if let Err(e) = save_file_drop_attachment(&msg, &listener_files_dir) {
+                    eprintln!("[chat] save file_drop attachment failed: {e:#}");
+                    continue;
+                }
+            }
             // Persist for the Hook to inject into Claude.
             if let Err(e) = log_io::append(&mut listener_log, &msg) {
                 eprintln!("[chat] append incoming Message failed: {e:#}");
@@ -191,7 +203,11 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
             }
             // Tiny REPL display: short author + body, single-line.
             let nick_short: String = msg.author.chars().take(8).collect();
-            let line: String = msg.body.replace(['\n', '\r', '\t'], " ");
+            let line: String = if msg.kind == cc_connect_core::message::KIND_FILE_DROP {
+                format!("dropped {}", msg.body)
+            } else {
+                msg.body.replace(['\n', '\r', '\t'], " ")
+            };
             println!("[{nick_short}] {line}");
         }
     });
@@ -221,8 +237,29 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
         if body.is_empty() {
             continue;
         }
-        let msg = Message::new(&new_ulid(), pubkey_string.clone(), now_ms(), body)
-            .context("build Message")?;
+
+        let msg = if let Some(path_str) = body.strip_prefix("/drop ") {
+            // v0.2-alpha file drop: read the file, embed inline base64.
+            match build_file_drop(path_str.trim(), &pubkey_string, &topic_id_hex) {
+                Ok(m) => {
+                    println!("[chat] dropped {} ({} bytes)", m.body, file_byte_count(&m));
+                    m
+                }
+                Err(e) => {
+                    eprintln!("[chat] /drop failed: {e:#}");
+                    continue;
+                }
+            }
+        } else if body.starts_with('/') {
+            eprintln!(
+                "[chat] unknown slash command. Available: `/drop <path>`. Type plain text to chat."
+            );
+            continue;
+        } else {
+            Message::new(&new_ulid(), pubkey_string.clone(), now_ms(), body)
+                .context("build Message")?
+        };
+
         // Local log first, then broadcast — if the broadcast fails the local
         // record is intact (PROTOCOL.md §6.1 step 3 ordering).
         if let Err(e) = log_io::append(&mut send_log, &msg) {
@@ -260,11 +297,66 @@ fn identity_path() -> Result<PathBuf> {
 }
 
 fn log_path_for(topic_id_hex: &str) -> PathBuf {
+    rooms_dir(topic_id_hex).join("log.jsonl")
+}
+
+fn files_dir_for(topic_id_hex: &str) -> PathBuf {
+    rooms_dir(topic_id_hex).join("files")
+}
+
+fn rooms_dir(topic_id_hex: &str) -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".cc-connect")
-        .join("rooms")
-        .join(topic_id_hex)
-        .join("log.jsonl")
+    home.join(".cc-connect").join("rooms").join(topic_id_hex)
+}
+
+/// Read a file from `path`, then construct a file_drop Message and save the
+/// bytes locally under `<rooms_dir>/<topic>/files/<id>-<filename>` so the
+/// hook's `@file:` reference resolves on the next prompt.
+fn build_file_drop(path_str: &str, author_pubkey: &str, topic_id_hex: &str) -> Result<Message> {
+    let path = std::path::Path::new(path_str);
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("read {path_str}"))?;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow!("FILENAME_INVALID: cannot extract filename from {path_str:?}"))?
+        .to_string();
+    let id = new_ulid();
+    let msg = Message::new_file_drop(&id, author_pubkey.to_string(), now_ms(), filename, &bytes)
+        .context("build file_drop Message")?;
+
+    // Save locally so our own future hook fires can `@file:` it.
+    let files_dir = files_dir_for(topic_id_hex);
+    save_file_drop_attachment(&msg, &files_dir).context("save own attachment")?;
+    Ok(msg)
+}
+
+/// Materialise a file_drop Message's attachment under `<files_dir>/<id>-<filename>`.
+/// Idempotent: skips writing if the file already exists.
+fn save_file_drop_attachment(msg: &Message, files_dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let bytes = match msg.decode_attachment()? {
+        Some(b) => b,
+        None => return Ok(()), // no attachment payload — caller's responsibility
+    };
+    std::fs::create_dir_all(files_dir)
+        .with_context(|| format!("create_dir_all {}", files_dir.display()))?;
+    let _ = std::fs::set_permissions(files_dir, std::fs::Permissions::from_mode(0o700));
+    let target = files_dir.join(format!("{}-{}", msg.id, msg.body));
+    if target.exists() {
+        return Ok(());
+    }
+    std::fs::write(&target, &bytes)
+        .with_context(|| format!("write {}", target.display()))?;
+    let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
+    Ok(())
+}
+
+fn file_byte_count(msg: &Message) -> usize {
+    msg.attachment_b64
+        .as_ref()
+        .map(|s| s.len() * 3 / 4) // rough binary size from base64 length
+        .unwrap_or(0)
 }
 
 fn pid_file_path(topic_id_hex: &str) -> Result<PathBuf> {

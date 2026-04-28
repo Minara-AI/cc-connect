@@ -145,8 +145,13 @@ pub async fn try_backfill_from(
     peer: &EndpointAddr,
     since: Option<String>,
     log_path: &PathBuf,
+    files_dir: &PathBuf,
 ) -> BackfillOutcome {
-    match tokio::time::timeout(PER_ATTEMPT_TIMEOUT, attempt(endpoint, peer, since, log_path)).await
+    match tokio::time::timeout(
+        PER_ATTEMPT_TIMEOUT,
+        attempt(endpoint, peer, since, log_path, files_dir),
+    )
+    .await
     {
         Ok(Ok(BackfillOutcome::Filled { appended })) => BackfillOutcome::Filled { appended },
         Ok(Ok(other)) => other,
@@ -160,6 +165,7 @@ async fn attempt(
     peer: &EndpointAddr,
     since: Option<String>,
     log_path: &PathBuf,
+    files_dir: &PathBuf,
 ) -> Result<BackfillOutcome> {
     let connection = endpoint
         .connect(peer.clone(), BACKFILL_ALPN)
@@ -202,10 +208,37 @@ async fn attempt(
         if existing.contains(&msg.id) {
             continue;
         }
+        // file_drop Messages: materialise the inline attachment to disk so
+        // the hook's `@file:` path resolves on the next prompt.
+        if msg.kind == cc_connect_core::message::KIND_FILE_DROP {
+            if let Err(e) = save_attachment(&msg, files_dir) {
+                eprintln!("[backfill] save attachment for {} failed: {e:#}", msg.id);
+                continue;
+            }
+        }
         log_io::append(&mut log_file, &msg).context("append backfilled Message")?;
         appended += 1;
     }
     Ok(BackfillOutcome::Filled { appended })
+}
+
+fn save_attachment(msg: &Message, files_dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let bytes = match msg.decode_attachment()? {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+    std::fs::create_dir_all(files_dir)
+        .with_context(|| format!("create_dir_all {}", files_dir.display()))?;
+    let _ = std::fs::set_permissions(files_dir, std::fs::Permissions::from_mode(0o700));
+    let target = files_dir.join(format!("{}-{}", msg.id, msg.body));
+    if target.exists() {
+        return Ok(());
+    }
+    std::fs::write(&target, &bytes)
+        .with_context(|| format!("write {}", target.display()))?;
+    let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

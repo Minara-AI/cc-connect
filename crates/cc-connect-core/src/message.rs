@@ -18,6 +18,15 @@ pub const ULID_LEN: usize = 26;
 /// The default (and v0.1's only) `kind`.
 pub const KIND_CHAT: &str = "chat";
 
+/// v0.2-alpha: file_drop carries an inline base64 attachment.
+pub const KIND_FILE_DROP: &str = "file_drop";
+
+/// Inline-attachment ceiling (binary bytes, before base64 expansion).
+/// Sized to comfortably fit inside iroh-gossip's per-frame envelope after
+/// base64 + JSON overhead (~32 KB binary → ~43 KB base64 → ~44 KB Message).
+/// v0.2.1 will swap to iroh-blobs for arbitrary sizes.
+pub const ATTACHMENT_MAX_BINARY_BYTES: usize = 32 * 1024;
+
 /// A v0.1 chat Message.
 ///
 /// Field order in the struct matches PROTOCOL.md §4's canonical JSON order
@@ -30,9 +39,17 @@ pub struct Message {
     pub id: String,
     pub author: String,
     pub ts: i64,
+    /// For `kind=chat`: the message body (≤ BODY_MAX_BYTES).
+    /// For `kind=file_drop`: the original filename (no path components).
     pub body: String,
     #[serde(default = "default_kind", skip_serializing_if = "is_default_kind")]
     pub kind: String,
+    /// v0.2-alpha file_drop attachment: base64-encoded raw file bytes.
+    /// Present on the wire and in log.jsonl when kind=file_drop. Capped at
+    /// ATTACHMENT_MAX_BINARY_BYTES of *binary* (4/3 expansion in base64).
+    /// `None` for chat messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_b64: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -43,7 +60,7 @@ fn is_default_kind(k: &String) -> bool {
 }
 
 impl Message {
-    /// Construct a Message; caller supplies the ULID and timestamp.
+    /// Construct a chat Message; caller supplies the ULID and timestamp.
     /// Validates body size and ULID well-formedness; normalises the ULID
     /// per Crockford rules (PROTOCOL.md §4).
     pub fn new(id: &str, author: String, ts: i64, body: String) -> Result<Self> {
@@ -56,7 +73,59 @@ impl Message {
             ts,
             body,
             kind: KIND_CHAT.to_string(),
+            attachment_b64: None,
         })
+    }
+
+    /// Construct a file_drop Message (v0.2-alpha).
+    ///
+    /// `body` is the original filename (no path separators); `bytes` is the
+    /// raw file content (capped at ATTACHMENT_MAX_BINARY_BYTES). The bytes
+    /// are base64-encoded into `attachment_b64` for inline transport.
+    pub fn new_file_drop(
+        id: &str,
+        author: String,
+        ts: i64,
+        filename: String,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        if bytes.len() > ATTACHMENT_MAX_BINARY_BYTES {
+            bail!(
+                "ATTACHMENT_TOO_LARGE: {} bytes exceeds the {} byte cap (v0.2-alpha inline limit; v0.2.1 will swap to iroh-blobs)",
+                bytes.len(),
+                ATTACHMENT_MAX_BINARY_BYTES
+            );
+        }
+        if filename.is_empty() {
+            bail!("FILENAME_EMPTY: file_drop body must be a non-empty filename");
+        }
+        if filename.contains('/') || filename.contains('\\') || filename.contains('\0') {
+            bail!("FILENAME_INVALID: file_drop body MUST NOT contain path separators or NUL");
+        }
+        let id = normalize_ulid(id)?;
+        let attachment_b64 = data_encoding::BASE64.encode(bytes);
+        Ok(Self {
+            v: PROTOCOL_VERSION,
+            id,
+            author,
+            ts,
+            body: filename,
+            kind: KIND_FILE_DROP.to_string(),
+            attachment_b64: Some(attachment_b64),
+        })
+    }
+
+    /// Decode the inline attachment to raw bytes. Returns `Ok(None)` if the
+    /// Message has no attachment (chat kind, or file_drop with bytes already
+    /// stripped post-extraction).
+    pub fn decode_attachment(&self) -> Result<Option<Vec<u8>>> {
+        match &self.attachment_b64 {
+            None => Ok(None),
+            Some(s) => data_encoding::BASE64
+                .decode(s.as_bytes())
+                .map(Some)
+                .map_err(|e| anyhow!("ATTACHMENT_BASE64_ERROR: {e}")),
+        }
     }
 
     /// Serialise to PROTOCOL.md §4 canonical bytes.
@@ -89,13 +158,35 @@ impl Message {
                 msg.v
             );
         }
-        if msg.kind != KIND_CHAT {
-            bail!(
-                "UNKNOWN_KIND: v0.1 MUST drop messages with kind != \"chat\" (got kind={:?})",
-                msg.kind
-            );
+        match msg.kind.as_str() {
+            KIND_CHAT => validate_body(&msg.body)?,
+            KIND_FILE_DROP => {
+                // For file_drop, body is a filename — small. Attachment may
+                // be present (on wire) or absent (after local extraction).
+                if msg.body.is_empty() {
+                    bail!("FILENAME_EMPTY: file_drop body must be non-empty");
+                }
+                if msg.body.contains('/') || msg.body.contains('\\') || msg.body.contains('\0') {
+                    bail!("FILENAME_INVALID: file_drop body has path separators");
+                }
+                if let Some(b64) = &msg.attachment_b64 {
+                    // Decoded length cap (RFC 4648 base64 expands by ~4/3;
+                    // budget = ATTACHMENT_MAX_BINARY_BYTES * 4 / 3 + a bit).
+                    if b64.len() > ATTACHMENT_MAX_BINARY_BYTES * 4 / 3 + 4 {
+                        bail!(
+                            "ATTACHMENT_TOO_LARGE: base64 length {} suggests > {} binary bytes",
+                            b64.len(),
+                            ATTACHMENT_MAX_BINARY_BYTES
+                        );
+                    }
+                }
+            }
+            other => {
+                bail!(
+                    "UNKNOWN_KIND: receivers MUST drop messages with unrecognised kind (got kind={other:?})"
+                )
+            }
         }
-        validate_body(&msg.body)?;
         msg.id = normalize_ulid(&msg.id)?;
         Ok(msg)
     }
@@ -212,9 +303,78 @@ mod tests {
 
     #[test]
     fn rejects_unknown_kind() {
-        let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"file_drop"}"#;
-        let err = Message::from_wire_bytes(bad).err().expect("non-chat kind must be rejected");
+        // "system" is reserved per PROTOCOL.md §10 but not yet supported by
+        // v0.2-alpha (only chat + file_drop are accepted).
+        let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"system"}"#;
+        let err = Message::from_wire_bytes(bad).err().expect("system kind must be rejected");
         assert!(err.to_string().contains("UNKNOWN_KIND"), "got: {err}");
+    }
+
+    #[test]
+    fn file_drop_kind_accepted_with_filename_and_attachment() {
+        // Build a file_drop, encode, parse back, attachment decodes to bytes.
+        let bytes = b"<svg>hello</svg>".to_vec();
+        let msg = Message::new_file_drop(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            "design.svg".to_string(),
+            &bytes,
+        )
+        .expect("valid file_drop");
+        assert_eq!(msg.kind, KIND_FILE_DROP);
+        assert_eq!(msg.body, "design.svg");
+        let wire = msg.to_canonical_json().unwrap();
+        let parsed = Message::from_wire_bytes(&wire).expect("file_drop wire roundtrip");
+        assert_eq!(parsed.kind, KIND_FILE_DROP);
+        assert_eq!(parsed.body, "design.svg");
+        assert_eq!(parsed.decode_attachment().unwrap().unwrap(), bytes);
+    }
+
+    #[test]
+    fn file_drop_with_path_separator_in_filename_rejected() {
+        let err = Message::new_file_drop(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            "../etc/passwd".to_string(),
+            b"x",
+        )
+        .err()
+        .expect("path separator MUST be rejected");
+        assert!(err.to_string().contains("FILENAME_INVALID"), "got: {err}");
+    }
+
+    #[test]
+    fn file_drop_with_oversized_attachment_rejected_at_constructor() {
+        let big = vec![0u8; ATTACHMENT_MAX_BINARY_BYTES + 1];
+        let err = Message::new_file_drop(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            "huge.bin".to_string(),
+            &big,
+        )
+        .err()
+        .expect("oversize MUST be rejected");
+        assert!(err.to_string().contains("ATTACHMENT_TOO_LARGE"), "got: {err}");
+    }
+
+    #[test]
+    fn file_drop_with_empty_body_rejected_on_wire() {
+        let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"file_drop"}"#;
+        let err = Message::from_wire_bytes(bad).err().expect("empty filename rejected");
+        assert!(err.to_string().contains("FILENAME_EMPTY"), "got: {err}");
+    }
+
+    #[test]
+    fn chat_message_has_no_attachment_field_in_canonical_form() {
+        let msg = Message::new(VEC_ULID, VEC_PUBKEY.to_string(), VEC_TS, VEC_BODY.to_string()).unwrap();
+        let s = String::from_utf8(msg.to_canonical_json().unwrap()).unwrap();
+        assert!(
+            !s.contains("attachment_b64"),
+            "chat Messages must omit attachment_b64 (skip_serializing_if): {s}"
+        );
     }
 
     #[test]
