@@ -68,6 +68,15 @@ impl Identity {
         self.signing_key.verifying_key().to_bytes()
     }
 
+    /// The 32-byte Ed25519 secret-key seed.
+    ///
+    /// Exposed so callers (notably `cc-connect host`/`chat`) can construct
+    /// an `iroh::SecretKey` with the *same* bytes; PROTOCOL.md §2 requires
+    /// the iroh `NodeId` to equal the Pubkey.
+    pub fn seed_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
     /// Canonical Pubkey string per PROTOCOL.md §2: RFC 4648 base32, lowercase,
     /// no padding, of the 32-byte public key. Matches iroh's `NodeId` string.
     pub fn pubkey_string(&self) -> String {

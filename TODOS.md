@@ -1,5 +1,30 @@
 # TODOS
 
+## WORKAROUND ACTIVE: vendored ed25519 + ed25519-dalek (pending upstream PR)
+
+**Status:** Resolved locally via `[patch.crates-io]` pointing at vendored copies of `ed25519 3.0.0-rc.4` and `ed25519-dalek 3.0.0-pre.1` with three+two-line fixes. cc-connect-core, cc-connect bin (`host` / `doctor` / placeholder `chat`), and cc-connect-hook bin all build and test on stable Rust 1.95.
+
+**Root cause** (for the historical record): `pkcs8::Error::KeyMalformed` was changed from a unit variant to a tuple variant `KeyMalformed(KeyError)`. Both `ed25519 3.0.0-rc.4` and `ed25519-dalek 3.0.0-pre.1` still reference it as a unit variant. Bare `Error::KeyMalformed` is therefore a `fn(KeyError) -> Error` function pointer, not an `Error` value, so `?` and `return Err(...)` both fail to type-check.
+
+**Local fix in this repo:**
+- `vendored/ed25519/src/pkcs8.rs` — three sites (lines 172, 173, 179) updated to `Error::KeyMalformed(KeyError::Invalid)` plus a `KeyError` import.
+- `vendored/ed25519-dalek/src/signing.rs` — two sites (lines 714, 717) updated similarly.
+- Workspace `Cargo.toml`: `[patch.crates-io] ed25519 = { path = "vendored/ed25519" }`, `ed25519-dalek = { path = "vendored/ed25519-dalek" }`.
+
+**Upstream PRs / issues filed (2026-04-28):**
+- `n0-computer/iroh#4192` — comment with full root-cause + workaround diff.
+- `RustCrypto/signatures#1315` — root-cause issue. (Note: `ed25519` master is *already* fixed in RustCrypto/signatures master, just unreleased; ed25519-dalek is the only crate still carrying the bug.)
+- `dalek-cryptography/curve25519-dalek#901` — PR with the actual semantic fix to `ed25519-dalek/src/signing.rs`.
+
+**Removal trigger:** when PR#901 merges and a new `ed25519-dalek` ships against an `ed25519` that re-exports `KeyError`, iroh's `=3.0.0-pre.x` pin can be bumped. At that point:
+1. `cargo update` to pull the released ed25519-dalek.
+2. Delete `vendored/ed25519/` and `vendored/ed25519-dalek/`.
+3. Remove the two `[patch.crates-io]` entries for them in workspace `Cargo.toml`.
+4. Verify `cargo test --workspace` and `cc-connect host` still work.
+5. Commit "chore: drop vendored ed25519 patches now that upstream is unblocked."
+
+---
+
 ## v0.1 implementation
 
 ### Bootstrap race UX

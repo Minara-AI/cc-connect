@@ -7,6 +7,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod doctor;
+mod host;
+mod ticket_payload;
 
 #[derive(Parser)]
 #[command(name = "cc-connect", version, about)]
@@ -31,15 +33,10 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Command::Host => host(),
+        Command::Host => host::run(),
         Command::Chat { ticket } => chat(&ticket),
         Command::Doctor => doctor::run(),
     }
-}
-
-fn host() -> Result<()> {
-    // PROTOCOL.md §3 (Ticket creation), §6.1 (gossip topic).
-    todo!("create iroh endpoint, generate gossip topic, encode and print Ticket")
 }
 
 fn chat(_ticket: &str) -> Result<()> {
