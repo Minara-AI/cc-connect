@@ -1,0 +1,17 @@
+[package]
+name = "cc-connect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "cc-connect host/chat/doctor — multi-Claude shared-substrate client."
+
+[[bin]]
+name = "cc-connect"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cc-connect-core = { path = "../cc-connect-core" }

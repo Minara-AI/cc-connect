@@ -1,0 +1,17 @@
+[package]
+name = "cc-connect-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Shared types and on-disk I/O for cc-connect."
+
+[dependencies]
+anyhow.workspace = true
+data-encoding.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

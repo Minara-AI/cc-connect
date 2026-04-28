@@ -1,6 +1,9 @@
 # Rust
 /target
 **/*.rs.bk
+# Cargo.lock currently ignored. Once the build is verified end-to-end on
+# Rust ≥ 1.85, remove this line and commit the lockfile — we publish bins
+# and reproducible builds matter for the v0.1 release-gate test.
 Cargo.lock
 
 # macOS

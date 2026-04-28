@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cc-connect-core",
+    "crates/cc-connect",
+    "crates/cc-connect-hook",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yijian/cc-connect"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# stdlib companions
+anyhow = "1"
+# crypto
+ed25519-dalek = "2"
+getrandom = "0.2"
+# encoding
+data-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# CLI
+clap = { version = "4", features = ["derive"] }
+# test helpers
+tempfile = "3"
+
+# iroh stack — pinned per PROTOCOL.md §0.
+# Uncomment when cc-connect-core grows beyond the parts that don't depend on iroh.
+# iroh-net = "0.30"
+# iroh-gossip = "0.30"
+# iroh-blobs = "0.30"
+# tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
