@@ -18,14 +18,19 @@ pub const ULID_LEN: usize = 26;
 /// The default (and v0.1's only) `kind`.
 pub const KIND_CHAT: &str = "chat";
 
-/// v0.2-alpha: file_drop carries an inline base64 attachment.
+/// v0.2: file_drop announces an iroh-blobs hash; the bytes are fetched
+/// out-of-band over the iroh-blobs ALPN against the author's NodeId.
 pub const KIND_FILE_DROP: &str = "file_drop";
 
-/// Inline-attachment ceiling (binary bytes, before base64 expansion).
-/// Sized to comfortably fit inside iroh-gossip's per-frame envelope after
-/// base64 + JSON overhead (~32 KB binary → ~43 KB base64 → ~44 KB Message).
-/// v0.2.1 will swap to iroh-blobs for arbitrary sizes.
-pub const ATTACHMENT_MAX_BINARY_BYTES: usize = 32 * 1024;
+/// Hard ceiling on advertised file size (bytes). 1 GiB is enough for the
+/// "share a screenshot / repo tarball / model weight" use-case while still
+/// blocking obvious griefing payloads. Receivers MUST refuse downloads above
+/// this — local disk and gossip envelope size are independent here because
+/// the bytes flow over iroh-blobs, not gossip.
+pub const FILE_DROP_MAX_BYTES: u64 = 1 << 30;
+
+/// Length of a hex-encoded BLAKE3 hash (iroh-blobs Hash on the wire).
+pub const BLOB_HASH_HEX_LEN: usize = 64;
 
 /// A v0.1 chat Message.
 ///
@@ -44,12 +49,15 @@ pub struct Message {
     pub body: String,
     #[serde(default = "default_kind", skip_serializing_if = "is_default_kind")]
     pub kind: String,
-    /// v0.2-alpha file_drop attachment: base64-encoded raw file bytes.
-    /// Present on the wire and in log.jsonl when kind=file_drop. Capped at
-    /// ATTACHMENT_MAX_BINARY_BYTES of *binary* (4/3 expansion in base64).
+    /// v0.2 file_drop: 64-char lowercase hex iroh-blobs BLAKE3 hash. Receivers
+    /// dial `author`'s NodeId over the iroh-blobs ALPN to fetch the bytes.
     /// `None` for chat messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attachment_b64: Option<String>,
+    pub blob_hash: Option<String>,
+    /// v0.2 file_drop: advertised file size in bytes. Receivers MUST refuse
+    /// downloads where this exceeds `FILE_DROP_MAX_BYTES`. `None` for chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_size: Option<u64>,
 }
 
 fn default_kind() -> String {
@@ -73,37 +81,31 @@ impl Message {
             ts,
             body,
             kind: KIND_CHAT.to_string(),
-            attachment_b64: None,
+            blob_hash: None,
+            blob_size: None,
         })
     }
 
-    /// Construct a file_drop Message (v0.2-alpha).
+    /// Construct a file_drop Message (v0.2).
     ///
-    /// `body` is the original filename (no path separators); `bytes` is the
-    /// raw file content (capped at ATTACHMENT_MAX_BINARY_BYTES). The bytes
-    /// are base64-encoded into `attachment_b64` for inline transport.
+    /// `filename` is the original basename (no path separators); `blob_hash`
+    /// is a 64-char lowercase hex BLAKE3 hash returned by
+    /// `iroh_blobs::store::*::add_path`; `blob_size` is the file size in
+    /// bytes (must be ≤ `FILE_DROP_MAX_BYTES`). The actual bytes flow
+    /// out-of-band over the iroh-blobs ALPN — this Message is only the
+    /// announcement.
     pub fn new_file_drop(
         id: &str,
         author: String,
         ts: i64,
         filename: String,
-        bytes: &[u8],
+        blob_hash: String,
+        blob_size: u64,
     ) -> Result<Self> {
-        if bytes.len() > ATTACHMENT_MAX_BINARY_BYTES {
-            bail!(
-                "ATTACHMENT_TOO_LARGE: {} bytes exceeds the {} byte cap (v0.2-alpha inline limit; v0.2.1 will swap to iroh-blobs)",
-                bytes.len(),
-                ATTACHMENT_MAX_BINARY_BYTES
-            );
-        }
-        if filename.is_empty() {
-            bail!("FILENAME_EMPTY: file_drop body must be a non-empty filename");
-        }
-        if filename.contains('/') || filename.contains('\\') || filename.contains('\0') {
-            bail!("FILENAME_INVALID: file_drop body MUST NOT contain path separators or NUL");
-        }
+        validate_filename(&filename)?;
+        validate_blob_hash(&blob_hash)?;
+        validate_blob_size(blob_size)?;
         let id = normalize_ulid(id)?;
-        let attachment_b64 = data_encoding::BASE64.encode(bytes);
         Ok(Self {
             v: PROTOCOL_VERSION,
             id,
@@ -111,21 +113,9 @@ impl Message {
             ts,
             body: filename,
             kind: KIND_FILE_DROP.to_string(),
-            attachment_b64: Some(attachment_b64),
+            blob_hash: Some(blob_hash),
+            blob_size: Some(blob_size),
         })
-    }
-
-    /// Decode the inline attachment to raw bytes. Returns `Ok(None)` if the
-    /// Message has no attachment (chat kind, or file_drop with bytes already
-    /// stripped post-extraction).
-    pub fn decode_attachment(&self) -> Result<Option<Vec<u8>>> {
-        match &self.attachment_b64 {
-            None => Ok(None),
-            Some(s) => data_encoding::BASE64
-                .decode(s.as_bytes())
-                .map(Some)
-                .map_err(|e| anyhow!("ATTACHMENT_BASE64_ERROR: {e}")),
-        }
     }
 
     /// Serialise to PROTOCOL.md §4 canonical bytes.
@@ -161,25 +151,16 @@ impl Message {
         match msg.kind.as_str() {
             KIND_CHAT => validate_body(&msg.body)?,
             KIND_FILE_DROP => {
-                // For file_drop, body is a filename — small. Attachment may
-                // be present (on wire) or absent (after local extraction).
-                if msg.body.is_empty() {
-                    bail!("FILENAME_EMPTY: file_drop body must be non-empty");
-                }
-                if msg.body.contains('/') || msg.body.contains('\\') || msg.body.contains('\0') {
-                    bail!("FILENAME_INVALID: file_drop body has path separators");
-                }
-                if let Some(b64) = &msg.attachment_b64 {
-                    // Decoded length cap (RFC 4648 base64 expands by ~4/3;
-                    // budget = ATTACHMENT_MAX_BINARY_BYTES * 4 / 3 + a bit).
-                    if b64.len() > ATTACHMENT_MAX_BINARY_BYTES * 4 / 3 + 4 {
-                        bail!(
-                            "ATTACHMENT_TOO_LARGE: base64 length {} suggests > {} binary bytes",
-                            b64.len(),
-                            ATTACHMENT_MAX_BINARY_BYTES
-                        );
-                    }
-                }
+                validate_filename(&msg.body)?;
+                let hash = msg
+                    .blob_hash
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("BLOB_HASH_MISSING: file_drop requires blob_hash"))?;
+                validate_blob_hash(hash)?;
+                let size = msg
+                    .blob_size
+                    .ok_or_else(|| anyhow!("BLOB_SIZE_MISSING: file_drop requires blob_size"))?;
+                validate_blob_size(size)?;
             }
             other => {
                 bail!(
@@ -198,6 +179,40 @@ fn validate_body(body: &str) -> Result<()> {
             "BODY_TOO_LARGE: {} bytes exceeds the {} byte cap (PROTOCOL.md §4)",
             body.len(),
             BODY_MAX_BYTES
+        );
+    }
+    Ok(())
+}
+
+fn validate_filename(filename: &str) -> Result<()> {
+    if filename.is_empty() {
+        bail!("FILENAME_EMPTY: file_drop body must be a non-empty filename");
+    }
+    if filename.contains('/') || filename.contains('\\') || filename.contains('\0') {
+        bail!("FILENAME_INVALID: file_drop body MUST NOT contain path separators or NUL");
+    }
+    Ok(())
+}
+
+fn validate_blob_hash(hash: &str) -> Result<()> {
+    if hash.len() != BLOB_HASH_HEX_LEN {
+        bail!(
+            "BLOB_HASH_INVALID: expected {BLOB_HASH_HEX_LEN}-char hex, got {}",
+            hash.len()
+        );
+    }
+    if !hash.bytes().all(|b| b.is_ascii_hexdigit() && (!b.is_ascii_alphabetic() || b.is_ascii_lowercase())) {
+        bail!("BLOB_HASH_INVALID: must be lowercase hex");
+    }
+    Ok(())
+}
+
+fn validate_blob_size(size: u64) -> Result<()> {
+    if size > FILE_DROP_MAX_BYTES {
+        bail!(
+            "BLOB_TOO_LARGE: {} bytes exceeds the {} byte cap",
+            size,
+            FILE_DROP_MAX_BYTES
         );
     }
     Ok(())
@@ -310,25 +325,28 @@ mod tests {
         assert!(err.to_string().contains("UNKNOWN_KIND"), "got: {err}");
     }
 
+    /// Valid 64-char lowercase hex BLAKE3 hash (zero-vector).
+    const VEC_BLOB_HASH: &str =
+        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
+
     #[test]
-    fn file_drop_kind_accepted_with_filename_and_attachment() {
-        // Build a file_drop, encode, parse back, attachment decodes to bytes.
-        let bytes = b"<svg>hello</svg>".to_vec();
+    fn file_drop_kind_accepted_with_filename_hash_and_size() {
         let msg = Message::new_file_drop(
             VEC_ULID,
             VEC_PUBKEY.to_string(),
             VEC_TS,
             "design.svg".to_string(),
-            &bytes,
+            VEC_BLOB_HASH.to_string(),
+            42,
         )
         .expect("valid file_drop");
         assert_eq!(msg.kind, KIND_FILE_DROP);
         assert_eq!(msg.body, "design.svg");
+        assert_eq!(msg.blob_hash.as_deref(), Some(VEC_BLOB_HASH));
+        assert_eq!(msg.blob_size, Some(42));
         let wire = msg.to_canonical_json().unwrap();
         let parsed = Message::from_wire_bytes(&wire).expect("file_drop wire roundtrip");
-        assert_eq!(parsed.kind, KIND_FILE_DROP);
-        assert_eq!(parsed.body, "design.svg");
-        assert_eq!(parsed.decode_attachment().unwrap().unwrap(), bytes);
+        assert_eq!(parsed, msg);
     }
 
     #[test]
@@ -338,7 +356,8 @@ mod tests {
             VEC_PUBKEY.to_string(),
             VEC_TS,
             "../etc/passwd".to_string(),
-            b"x",
+            VEC_BLOB_HASH.to_string(),
+            1,
         )
         .err()
         .expect("path separator MUST be rejected");
@@ -346,34 +365,85 @@ mod tests {
     }
 
     #[test]
-    fn file_drop_with_oversized_attachment_rejected_at_constructor() {
-        let big = vec![0u8; ATTACHMENT_MAX_BINARY_BYTES + 1];
+    fn file_drop_with_oversized_blob_rejected_at_constructor() {
         let err = Message::new_file_drop(
             VEC_ULID,
             VEC_PUBKEY.to_string(),
             VEC_TS,
             "huge.bin".to_string(),
-            &big,
+            VEC_BLOB_HASH.to_string(),
+            FILE_DROP_MAX_BYTES + 1,
         )
         .err()
         .expect("oversize MUST be rejected");
-        assert!(err.to_string().contains("ATTACHMENT_TOO_LARGE"), "got: {err}");
+        assert!(err.to_string().contains("BLOB_TOO_LARGE"), "got: {err}");
+    }
+
+    #[test]
+    fn file_drop_with_invalid_hash_rejected() {
+        let err = Message::new_file_drop(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            "x".to_string(),
+            "deadbeef".to_string(),
+            1,
+        )
+        .err()
+        .expect("short hash rejected");
+        assert!(err.to_string().contains("BLOB_HASH_INVALID"), "got: {err}");
+
+        // uppercase hex not allowed (canonical lowercase)
+        let upper = VEC_BLOB_HASH.to_uppercase();
+        let err = Message::new_file_drop(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            "x".to_string(),
+            upper,
+            1,
+        )
+        .err()
+        .expect("uppercase hex rejected");
+        assert!(err.to_string().contains("BLOB_HASH_INVALID"), "got: {err}");
+    }
+
+    #[test]
+    fn file_drop_missing_blob_hash_rejected_on_wire() {
+        let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"f.bin","kind":"file_drop","blob_size":1}"#;
+        let err = Message::from_wire_bytes(bad).err().expect("missing hash rejected");
+        assert!(err.to_string().contains("BLOB_HASH_MISSING"), "got: {err}");
+    }
+
+    #[test]
+    fn file_drop_missing_blob_size_rejected_on_wire() {
+        let bad = format!(
+            r#"{{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"f.bin","kind":"file_drop","blob_hash":"{VEC_BLOB_HASH}"}}"#,
+        );
+        let err = Message::from_wire_bytes(bad.as_bytes())
+            .err()
+            .expect("missing size rejected");
+        assert!(err.to_string().contains("BLOB_SIZE_MISSING"), "got: {err}");
     }
 
     #[test]
     fn file_drop_with_empty_body_rejected_on_wire() {
-        let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"file_drop"}"#;
-        let err = Message::from_wire_bytes(bad).err().expect("empty filename rejected");
+        let bad = format!(
+            r#"{{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"file_drop","blob_hash":"{VEC_BLOB_HASH}","blob_size":1}}"#,
+        );
+        let err = Message::from_wire_bytes(bad.as_bytes())
+            .err()
+            .expect("empty filename rejected");
         assert!(err.to_string().contains("FILENAME_EMPTY"), "got: {err}");
     }
 
     #[test]
-    fn chat_message_has_no_attachment_field_in_canonical_form() {
+    fn chat_message_has_no_blob_fields_in_canonical_form() {
         let msg = Message::new(VEC_ULID, VEC_PUBKEY.to_string(), VEC_TS, VEC_BODY.to_string()).unwrap();
         let s = String::from_utf8(msg.to_canonical_json().unwrap()).unwrap();
         assert!(
-            !s.contains("attachment_b64"),
-            "chat Messages must omit attachment_b64 (skip_serializing_if): {s}"
+            !s.contains("blob_hash") && !s.contains("blob_size"),
+            "chat Messages must omit blob fields (skip_serializing_if): {s}"
         );
     }
 

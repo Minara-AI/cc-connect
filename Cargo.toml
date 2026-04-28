@@ -45,6 +45,8 @@ tempfile = "3"
 # `[patch.crates-io]` section at the bottom of this file and TODOS.md.
 iroh = "0.97"
 iroh-gossip = "0.97"
+# iroh-blobs 0.99 requires iroh ^0.97 (0.97 wants iroh ^0.95 which conflicts).
+iroh-blobs = "0.99"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "sync", "time", "signal"] }
 
 [profile.release]

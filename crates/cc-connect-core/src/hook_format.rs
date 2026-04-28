@@ -390,14 +390,14 @@ mod tests {
         // file_drop Messages render as `dropped <filename> @file:<path>` so
         // Claude Code reads the bytes via its existing @file: convention.
         let nm = nicks(&[(A_PUBKEY, "alice")]);
-        let bytes = b"<svg/>".to_vec();
         let id = ulid(1);
         let drop = Message::new_file_drop(
             &id,
             A_PUBKEY.to_string(),
             0,
             "design.svg".to_string(),
-            &bytes,
+            "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262".to_string(),
+            6,
         )
         .unwrap();
         let topic = "aaaa11";

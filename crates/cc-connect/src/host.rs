@@ -11,23 +11,23 @@
 //!      with `cc1-` + base32 + CRC32 (cc-connect-core::ticket), print.
 //!   7. Idle until SIGINT/SIGTERM so joiners can dial us.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use cc_connect_core::{identity::Identity, ticket::encode_room_code};
-use iroh::{endpoint::RelayMode, Endpoint, SecretKey};
+use iroh::{endpoint::RelayMode, Endpoint, RelayMap, SecretKey};
 use iroh_gossip::{net::{Gossip, GOSSIP_ALPN}, proto::TopicId};
 use std::path::PathBuf;
 
 use crate::ticket_payload::TicketPayload;
 
-pub fn run(no_relay: bool) -> Result<()> {
+pub fn run(no_relay: bool, relay: Option<&str>) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
-    rt.block_on(run_async(no_relay))
+    rt.block_on(run_async(no_relay, relay))
 }
 
-async fn run_async(no_relay: bool) -> Result<()> {
+async fn run_async(no_relay: bool, relay: Option<&str>) -> Result<()> {
     // Step 1: load or create the local Identity.
     let identity = load_identity()?;
     let secret_key = SecretKey::from_bytes(&identity.seed_bytes());
@@ -37,6 +37,10 @@ async fn run_async(no_relay: bool) -> Result<()> {
     let mut builder = Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key);
     if no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
+    } else if let Some(url) = relay {
+        let map = RelayMap::try_from_iter([url])
+            .map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
+        builder = builder.relay_mode(RelayMode::Custom(map));
     }
     let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 

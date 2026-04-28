@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# install.sh — interactive cc-connect setup.
+#
+# Walks the user through:
+#   1. toolchain check (rustc / cargo / git)
+#   2. workspace build (cargo build --workspace --release)
+#   3. UserPromptSubmit hook wired into ~/.claude/settings.json
+#   4. cc-connect doctor smoke check
+#
+# Re-runnable. Non-destructive: always backs up settings.json before edit.
+# Pass --yes to accept every prompt; pass --skip-build to skip cargo build.
+
+set -euo pipefail
+trap 'rc=$?; printf "\033[1;31m✗\033[0m install.sh: failed at line %d (exit %d): %s\n" "$LINENO" "$rc" "${BASH_COMMAND}" >&2' ERR
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ASSUME_YES=0
+SKIP_BUILD=0
+
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=1 ;;
+    --skip-build) SKIP_BUILD=1 ;;
+    -h|--help)
+      cat <<EOF
+Usage: install.sh [--yes] [--skip-build]
+
+  --yes          accept every confirmation prompt (non-interactive)
+  --skip-build   skip 'cargo build --workspace --release' (use existing target/)
+  -h, --help     show this help
+EOF
+      exit 0
+      ;;
+    *) echo "install.sh: unknown arg: $arg (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+# ---------- pretty output -----------------------------------------------------
+say()    { printf "\033[1;36m▶\033[0m %s\n" "$*"; }
+ok()     { printf "\033[1;32m✓\033[0m %s\n" "$*"; }
+warn()   { printf "\033[1;33m!\033[0m %s\n" "$*"; }
+fail()   { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
+
+confirm() {
+  local prompt="$1" default="${2:-Y}"
+  if [[ $ASSUME_YES -eq 1 ]]; then return 0; fi
+  local hint="[Y/n]"; [[ "$default" == "n" ]] && hint="[y/N]"
+  read -r -p "$prompt $hint " ans || ans=""
+  ans="${ans:-$default}"
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
+
+# ---------- 1. OS + toolchain check -------------------------------------------
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  *) fail "unsupported OS: $(uname -s) — cc-connect targets macOS / Linux." ;;
+esac
+say "host: $(uname -s) $(uname -m)"
+
+need_rust=0
+if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+  need_rust=1
+fi
+if [[ $need_rust -eq 1 ]]; then
+  warn "rustc / cargo not found."
+  if confirm "Install Rust via rustup?" Y; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    # rustup writes its env to ~/.cargo/env; pull it into this shell.
+    # shellcheck disable=SC1090,SC1091
+    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+  else
+    fail "Rust is required. Install rustc ≥ 1.85 then re-run install.sh."
+  fi
+fi
+
+rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')"
+ok "rustc ${rust_ver}"
+
+if ! command -v git >/dev/null 2>&1; then
+  fail "git is required (and missing). Install via your package manager / Xcode CLI tools."
+fi
+ok "git $(git --version | awk '{print $3}')"
+
+# ---------- 2. workspace build ------------------------------------------------
+if [[ $SKIP_BUILD -eq 0 ]]; then
+  say "building workspace (release) — first build takes 5-10 min"
+  ( cd "$REPO_ROOT" && cargo build --workspace --release )
+  ok "build complete"
+else
+  warn "skipping cargo build (--skip-build)"
+fi
+
+CONNECT_BIN="$REPO_ROOT/target/release/cc-connect"
+HOOK_BIN="$REPO_ROOT/target/release/cc-connect-hook"
+[[ -x "$CONNECT_BIN" ]] || fail "missing $CONNECT_BIN — re-run without --skip-build."
+[[ -x "$HOOK_BIN" ]] || fail "missing $HOOK_BIN — re-run without --skip-build."
+
+# ---------- 3. wire the UserPromptSubmit hook ---------------------------------
+CLAUDE_DIR="$HOME/.claude"
+SETTINGS="$CLAUDE_DIR/settings.json"
+mkdir -p "$CLAUDE_DIR"
+
+install_hook_jq() {
+  # Pure-jq path. Idempotent: removes any existing entry pointing at our hook
+  # before re-adding, so re-runs don't duplicate.
+  local hook_path="$1" tmp
+  tmp="$(mktemp)"
+  if [[ -s "$SETTINGS" ]]; then
+    jq --arg path "$hook_path" '
+      .hooks //= {} |
+      .hooks.UserPromptSubmit //= [] |
+      .hooks.UserPromptSubmit |= map(select(.command != $path)) |
+      .hooks.UserPromptSubmit += [{type:"command", command:$path}]
+    ' "$SETTINGS" > "$tmp"
+  else
+    jq -n --arg path "$hook_path" '
+      {hooks:{UserPromptSubmit:[{type:"command", command:$path}]}}
+    ' > "$tmp"
+  fi
+  mv "$tmp" "$SETTINGS"
+}
+
+install_hook_python() {
+  # Fallback when jq is unavailable. Python ships on every macOS / most Linux.
+  local hook_path="$1"
+  python3 - "$SETTINGS" "$hook_path" <<'PY'
+import json, sys, pathlib
+settings_path, hook_path = pathlib.Path(sys.argv[1]), sys.argv[2]
+data = {}
+if settings_path.exists() and settings_path.stat().st_size > 0:
+    data = json.loads(settings_path.read_text())
+hooks = data.setdefault("hooks", {})
+ups = hooks.setdefault("UserPromptSubmit", [])
+ups[:] = [h for h in ups if not (isinstance(h, dict) and h.get("command") == hook_path)]
+ups.append({"type": "command", "command": hook_path})
+settings_path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+
+if [[ -f "$SETTINGS" ]]; then
+  cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d-%H%M%S)"
+  ok "backed up existing settings.json"
+fi
+
+if confirm "Install UserPromptSubmit hook → $SETTINGS?" Y; then
+  if command -v jq >/dev/null 2>&1; then
+    install_hook_jq "$HOOK_BIN"
+  elif command -v python3 >/dev/null 2>&1; then
+    install_hook_python "$HOOK_BIN"
+  else
+    fail "neither jq nor python3 available — install one and re-run, or edit $SETTINGS manually."
+  fi
+  chmod 600 "$SETTINGS"
+  ok "hook installed: $HOOK_BIN"
+else
+  warn "skipped settings.json edit. Hook NOT wired — \`cc-connect\` chats won't surface in Claude Code until you add the hook manually."
+fi
+
+# ---------- 4. doctor smoke check --------------------------------------------
+say "running cc-connect doctor"
+"$CONNECT_BIN" doctor || warn "doctor reported issues — review the output above."
+
+# ---------- 5. next steps -----------------------------------------------------
+cat <<NEXT
+
+$(printf "\033[1;32m✓ install complete\033[0m")
+
+Next steps:
+  - Restart Claude Code so it picks up the new hook.
+  - Host a room:        $CONNECT_BIN host
+  - Join a room:        $CONNECT_BIN chat <ticket>
+  - LAN-only (no relay): pass --no-relay to host / chat
+  - Two-laptop demo:    see README.md "Two-laptop demo procedure"
+
+Settings live at: $SETTINGS
+Hook binary:      $HOOK_BIN
+NEXT

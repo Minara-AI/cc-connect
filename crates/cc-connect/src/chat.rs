@@ -27,8 +27,9 @@ use cc_connect_core::{
 use futures_lite::StreamExt;
 use iroh::{
     address_lookup::memory::MemoryLookup, endpoint::presets, endpoint::RelayMode, Endpoint,
-    SecretKey,
+    PublicKey, RelayMap, SecretKey,
 };
+use iroh_blobs::{store::mem::MemStore, BlobsProtocol, Hash};
 use iroh_gossip::{
     api::Event,
     net::{Gossip, GOSSIP_ALPN},
@@ -36,20 +37,21 @@ use iroh_gossip::{
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::backfill::{try_backfill_from, BackfillHandler, BackfillOutcome, BACKFILL_ALPN};
 use crate::ticket_payload::TicketPayload;
 
-pub fn run(ticket_str: &str, no_relay: bool) -> Result<()> {
+pub fn run(ticket_str: &str, no_relay: bool, relay: Option<&str>) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
-    rt.block_on(run_async(ticket_str, no_relay))
+    rt.block_on(run_async(ticket_str, no_relay, relay))
 }
 
-async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
+async fn run_async(ticket_str: &str, no_relay: bool, relay: Option<&str>) -> Result<()> {
     // 1. Decode ticket → topic + bootstrap peers.
     let payload_bytes = decode_room_code(ticket_str)
         .with_context(|| format!("decode room code: {ticket_str:.20}…"))?;
@@ -74,16 +76,26 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
         .address_lookup(memory_lookup.clone());
     if no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
+    } else if let Some(url) = relay {
+        let map = RelayMap::try_from_iter([url])
+            .map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
+        builder = builder.relay_mode(RelayMode::Custom(map));
     }
     let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 
-    // 4. Spawn gossip + Router accepting both gossip and our Backfill ALPN.
+    // 4. Spawn gossip + iroh-blobs MemStore, then a Router that accepts
+    //    gossip / backfill / blobs ALPNs. The MemStore caches every blob
+    //    we /drop so other peers can fetch them; backfill targets that
+    //    same store.
     let gossip = Gossip::builder().spawn(endpoint.clone());
+    let store = MemStore::new();
+    let blobs_proto = BlobsProtocol::new(&store, None);
     let log_path = log_path_for(&topic_id_hex);
     let backfill_handler = BackfillHandler::new(log_path.clone());
     let _router = iroh::protocol::Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
         .accept(BACKFILL_ALPN, backfill_handler)
+        .accept(iroh_blobs::ALPN, blobs_proto)
         .spawn();
 
     // 5. Wait until online so subscription can talk to peers. Skip when
@@ -110,7 +122,16 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
             None
         } else {
             let files_dir = files_dir_for(&topic_id_hex);
-            match try_backfill_from(&endpoint, first_peer, None, &log_path, &files_dir).await {
+            match try_backfill_from(
+                &endpoint,
+                &store,
+                first_peer,
+                None,
+                &log_path,
+                &files_dir,
+            )
+            .await
+            {
                 BackfillOutcome::Filled { appended } if appended > 0 => {
                     Some(format!(
                         "[chatroom] (backfilled {appended} message{} from peer)",
@@ -150,11 +171,14 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
 
     // 9. Spawn gossip listener task. It writes incoming Messages to the same
     //    log file (with its own File handle); fcntl + single-syscall write
-    //    keep concurrent appends safe. For file_drop Messages it also writes
-    //    the decoded attachment to the per-Room `files/` directory, so the
-    //    hook can `@file:` the local path on the next prompt.
+    //    keep concurrent appends safe. For file_drop Messages it dials the
+    //    author's NodeId over iroh-blobs to fetch the bytes, then exports
+    //    them under the per-Room `files/` directory so the hook can
+    //    `@file:` the local path on the next prompt.
     let listener_log_path = log_path.clone();
     let listener_files_dir = files_dir_for(&topic_id_hex);
+    let listener_store = store.clone();
+    let listener_endpoint = endpoint.clone();
     let our_pubkey = pubkey_string.clone();
     let listener_handle = tokio::task::spawn(async move {
         let mut listener_log = match log_io::open_or_create_log(&listener_log_path) {
@@ -188,11 +212,18 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
             if msg.author == our_pubkey {
                 continue;
             }
-            // For file_drop, materialise the attachment to disk so the
-            // hook's `@file:` path resolves on the next Claude prompt.
+            // For file_drop, fetch the announced blob from the author's
+            // NodeId and export it locally.
             if msg.kind == cc_connect_core::message::KIND_FILE_DROP {
-                if let Err(e) = save_file_drop_attachment(&msg, &listener_files_dir) {
-                    eprintln!("[chat] save file_drop attachment failed: {e:#}");
+                if let Err(e) = fetch_and_export_blob(
+                    &listener_store,
+                    &listener_endpoint,
+                    &msg,
+                    &listener_files_dir,
+                )
+                .await
+                {
+                    eprintln!("[chat] file_drop blob fetch failed for {}: {e:#}", msg.id);
                     continue;
                 }
             }
@@ -239,10 +270,16 @@ async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
         }
 
         let msg = if let Some(path_str) = body.strip_prefix("/drop ") {
-            // v0.2-alpha file drop: read the file, embed inline base64.
-            match build_file_drop(path_str.trim(), &pubkey_string, &topic_id_hex) {
+            // v0.2 file drop: hash the file into our local MemStore, then
+            // broadcast a Message announcing (hash, size). Peers fetch the
+            // bytes from us over the iroh-blobs ALPN.
+            match build_file_drop(&store, path_str.trim(), &pubkey_string, &topic_id_hex).await {
                 Ok(m) => {
-                    println!("[chat] dropped {} ({} bytes)", m.body, file_byte_count(&m));
+                    println!(
+                        "[chat] dropped {} ({} bytes)",
+                        m.body,
+                        m.blob_size.unwrap_or(0)
+                    );
                     m
                 }
                 Err(e) => {
@@ -309,36 +346,71 @@ fn rooms_dir(topic_id_hex: &str) -> PathBuf {
     home.join(".cc-connect").join("rooms").join(topic_id_hex)
 }
 
-/// Read a file from `path`, then construct a file_drop Message and save the
-/// bytes locally under `<rooms_dir>/<topic>/files/<id>-<filename>` so the
-/// hook's `@file:` reference resolves on the next prompt.
-fn build_file_drop(path_str: &str, author_pubkey: &str, topic_id_hex: &str) -> Result<Message> {
+/// Read a file from `path`, hash it into the iroh-blobs `store`, then build
+/// a file_drop Message announcing the resulting hash + size. Also copies a
+/// plain-bytes copy under `<rooms_dir>/<topic>/files/<id>-<filename>` so our
+/// own hook can `@file:` the local path on the next prompt without making a
+/// roundtrip.
+async fn build_file_drop(
+    store: &MemStore,
+    path_str: &str,
+    author_pubkey: &str,
+    topic_id_hex: &str,
+) -> Result<Message> {
     let path = std::path::Path::new(path_str);
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("read {path_str}"))?;
+    let abs_path = std::path::absolute(path)
+        .with_context(|| format!("absolute path of {path_str}"))?;
+    let metadata = std::fs::metadata(&abs_path)
+        .with_context(|| format!("stat {}", abs_path.display()))?;
+    let size = metadata.len();
+    if size > cc_connect_core::message::FILE_DROP_MAX_BYTES {
+        return Err(anyhow!(
+            "BLOB_TOO_LARGE: {} exceeds the {} byte cap",
+            size,
+            cc_connect_core::message::FILE_DROP_MAX_BYTES
+        ));
+    }
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow!("FILENAME_INVALID: cannot extract filename from {path_str:?}"))?
         .to_string();
-    let id = new_ulid();
-    let msg = Message::new_file_drop(&id, author_pubkey.to_string(), now_ms(), filename, &bytes)
-        .context("build file_drop Message")?;
 
-    // Save locally so our own future hook fires can `@file:` it.
+    // Import into the iroh-blobs store. The returned tag pins the blob in
+    // the store so peers can fetch it for the lifetime of this process.
+    let tag = store
+        .blobs()
+        .add_path(&abs_path)
+        .await
+        .with_context(|| format!("add_path {}", abs_path.display()))?;
+    let hash_hex = tag.hash.to_string();
+
+    let id = new_ulid();
+    let msg = Message::new_file_drop(
+        &id,
+        author_pubkey.to_string(),
+        now_ms(),
+        filename,
+        hash_hex,
+        size,
+    )
+    .context("build file_drop Message")?;
+
+    // Save locally so our own future hook fires can `@file:` it without a
+    // round-trip through the blob store.
     let files_dir = files_dir_for(topic_id_hex);
-    save_file_drop_attachment(&msg, &files_dir).context("save own attachment")?;
+    copy_local_to_files_dir(&msg, &abs_path, &files_dir)
+        .context("save local copy for hook")?;
     Ok(msg)
 }
 
-/// Materialise a file_drop Message's attachment under `<files_dir>/<id>-<filename>`.
-/// Idempotent: skips writing if the file already exists.
-fn save_file_drop_attachment(msg: &Message, files_dir: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let bytes = match msg.decode_attachment()? {
-        Some(b) => b,
-        None => return Ok(()), // no attachment payload — caller's responsibility
-    };
+/// Copy a freshly-dropped local file under
+/// `<files_dir>/<id>-<filename>` with 0600 perms. Idempotent.
+fn copy_local_to_files_dir(
+    msg: &Message,
+    src: &std::path::Path,
+    files_dir: &std::path::Path,
+) -> Result<()> {
     std::fs::create_dir_all(files_dir)
         .with_context(|| format!("create_dir_all {}", files_dir.display()))?;
     let _ = std::fs::set_permissions(files_dir, std::fs::Permissions::from_mode(0o700));
@@ -346,17 +418,50 @@ fn save_file_drop_attachment(msg: &Message, files_dir: &std::path::Path) -> Resu
     if target.exists() {
         return Ok(());
     }
-    std::fs::write(&target, &bytes)
-        .with_context(|| format!("write {}", target.display()))?;
+    std::fs::copy(src, &target)
+        .with_context(|| format!("copy {} → {}", src.display(), target.display()))?;
     let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
     Ok(())
 }
 
-fn file_byte_count(msg: &Message) -> usize {
-    msg.attachment_b64
-        .as_ref()
-        .map(|s| s.len() * 3 / 4) // rough binary size from base64 length
-        .unwrap_or(0)
+/// Fetch a file_drop's blob from the author's NodeId and export it under
+/// `<files_dir>/<id>-<filename>`. Idempotent — skips the download if the
+/// destination file already exists.
+pub(crate) async fn fetch_and_export_blob(
+    store: &MemStore,
+    endpoint: &Endpoint,
+    msg: &Message,
+    files_dir: &std::path::Path,
+) -> Result<()> {
+    let hash_hex = msg
+        .blob_hash
+        .as_deref()
+        .ok_or_else(|| anyhow!("BLOB_HASH_MISSING for {}", msg.id))?;
+    let hash = Hash::from_str(hash_hex)
+        .map_err(|e| anyhow!("BLOB_HASH_PARSE: {hash_hex} ({e})"))?;
+    let author_id = PublicKey::from_str(&msg.author)
+        .map_err(|e| anyhow!("AUTHOR_PARSE: {} ({e})", msg.author))?;
+
+    std::fs::create_dir_all(files_dir)
+        .with_context(|| format!("create_dir_all {}", files_dir.display()))?;
+    let _ = std::fs::set_permissions(files_dir, std::fs::Permissions::from_mode(0o700));
+    let target = files_dir.join(format!("{}-{}", msg.id, msg.body));
+    if target.exists() {
+        return Ok(());
+    }
+
+    let downloader = store.downloader(endpoint);
+    downloader
+        .download(hash, Some(author_id))
+        .await
+        .with_context(|| format!("download blob {hash}"))?;
+    store
+        .blobs()
+        .export(hash, &target)
+        .await
+        .with_context(|| format!("export {} → {}", hash, target.display()))?;
+    let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
+    Ok(())
 }
 
 fn pid_file_path(topic_id_hex: &str) -> Result<PathBuf> {

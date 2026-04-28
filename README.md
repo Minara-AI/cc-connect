@@ -36,21 +36,32 @@ Full architecture: [`PROTOCOL.md`](./PROTOCOL.md). Decision rationale: [`docs/ad
 
 ## Setup (per machine)
 
-You need: macOS or Linux, Rust ≥ 1.85, a working Claude Code install.
+You need: macOS or Linux, Rust ≥ 1.85 (or let the installer install it for you), a working Claude Code install.
 
-### 1. Build
+### One-liner
 
 ```bash
-git clone git@github.com:Minara-AI/cc-connect.git
-cd cc-connect
-cargo build --workspace --release
+git clone https://github.com/Minara-AI/cc-connect.git && cd cc-connect && ./install.sh
 ```
 
-The first build pulls the iroh stack and patched-vendored `ed25519` / `ed25519-dalek` (see `vendored/`); takes ~5-10 minutes.
+That's it. The script checks the toolchain (offers `rustup` if Rust is missing), runs the release build, backs up `~/.claude/settings.json` and merges the `UserPromptSubmit` hook entry idempotently, then runs `cc-connect doctor` to verify. Pass `--yes` for unattended, `--skip-build` to reuse an existing `target/release/`. Restart Claude Code afterwards so it picks up the new hook.
 
-### 2. Install the hook into Claude Code
+First build pulls the iroh stack and the patched-vendored `ed25519` / `ed25519-dalek` (see `vendored/`); takes ~5-10 minutes.
 
-cc-connect bridges to Claude Code via a `UserPromptSubmit` hook. Edit `~/.claude/settings.json` and add (merge with any existing `hooks` block):
+### Let Claude Code do it
+
+Open Claude Code in any directory and paste:
+
+> Clone https://github.com/Minara-AI/cc-connect, run its `install.sh`, then walk me through the `cc-connect doctor` output and tell me how to start a chat room.
+
+The repo ships a `cc-connect-setup` skill at `.claude/skills/cc-connect-setup/SKILL.md`, so once Claude `cd`s into the clone it picks up the skill automatically and knows the failure modes.
+
+### Manual install
+
+If you'd rather not run the script, the equivalent steps:
+
+1. `cargo build --workspace --release`.
+2. Edit `~/.claude/settings.json` (merge with any existing `hooks` block):
 
 ```json
 {
@@ -65,15 +76,9 @@ cc-connect bridges to Claude Code via a `UserPromptSubmit` hook. Edit `~/.claude
 }
 ```
 
-Use the **absolute path** — `cc-connect-hook` will silently fail to inject if Claude Code's `PATH` doesn't include the binary's location. Restart Claude Code after editing.
+   Use the **absolute path** — `cc-connect-hook` will silently fail to inject if Claude Code's `PATH` doesn't include the binary's location.
 
-### 3. Verify
-
-```bash
-./target/release/cc-connect doctor
-```
-
-Should report `[OK]` for the hook entry, `[--]` (info: not yet created) for the identity key and active-rooms dir, and ideally no `[FAIL]` lines.
+3. `./target/release/cc-connect doctor` — should report `[OK]` for the hook entry, `[--]` (info: not yet created) for the identity key and active-rooms dir, and ideally no `[FAIL]` lines. Restart Claude Code after editing.
 
 ---
 
@@ -110,20 +115,54 @@ Type to send. Ctrl-C / EOF to leave.
 
 Type messages. Press enter to send.
 
-### Drop a file (v0.2-alpha)
+### Drop a file (v0.2)
 
 ```
 > /drop ./design.svg
 [chat] dropped design.svg (148 bytes)
 ```
 
-`/drop <path>` reads the file inline, broadcasts it via gossip, and saves it locally on every peer's machine. Both peers' Claudes see it as `@file:<path>` on the next prompt — Claude Code reads it via its native file-attach convention.
+`/drop <path>` hashes the file into a local `iroh-blobs` `MemStore`, broadcasts a tiny gossip Message announcing the hash, then peers fetch the bytes out-of-band over the iroh-blobs ALPN against your NodeId. Both peers' Claudes see it as `@file:<path>` on the next prompt — Claude Code reads it via its native file-attach convention.
 
-**v0.2-alpha limit: 32 KB binary** (small images, code snippets, markdown). Larger files will land in v0.2.1 via `iroh-blobs`.
+**v0.2 cap: 1 GiB per file**, set by `FILE_DROP_MAX_BYTES` in `cc-connect-core::message`. Bytes flow via iroh-blobs, not gossip, so there's no per-frame envelope to budget against. Files only persist for the lifetime of your `cc-connect chat` process (the store is in-memory) — once you exit, late joiners can't fetch what you dropped.
 
 ### What Claude sees
 
 While `cc-connect chat …` is running, every prompt you send to Claude Code in another pane has the recent unread chat lines spliced into Claude's context. Claude doesn't know there's a chat — to it, the lines just look like extra prompt context tagged `[chatroom @nick HH:MMZ] body`.
+
+### Self-hosted relay (optional)
+
+By default cc-connect routes through n0's free public relay cluster (used by every iroh deployment). To run through your own server instead — for privacy, geographic locality, or to avoid n0's rate limits — point at a self-hosted iroh-relay:
+
+```bash
+cc-connect host --relay https://relay.yourdomain.com
+cc-connect chat <ticket> --relay https://relay.yourdomain.com   # joiners may also override
+```
+
+The host's `--relay` URL is baked into the printed ticket, so joiners who use the same ticket pick up the relay automatically — they only need to pass `--relay` themselves to override.
+
+#### Standing the relay up
+
+You need: a Linux server (Debian / Ubuntu tested), nginx + certbot installed, sudo, a (sub)domain with an A record pointing at the server, and Rust toolchain (the skill installs it for you if missing). The repo ships a `cc-connect-relay-setup` skill at `.claude/skills/cc-connect-relay-setup/SKILL.md` that automates the whole thing. Open Claude Code in any directory and paste:
+
+> 帮我用这台服务器自建一个 cc-connect 的 iroh-relay。SSH 是 `user@host`，域名是 `relay.example.com`，邮箱是 `me@example.com`。
+
+Claude will SSH in (key auth required), install `iroh-relay`, issue a Let's Encrypt cert via certbot, write the nginx vhost + systemd unit, and verify the relay returns 200 OK from the open internet. Takes ~5 minutes (most of it is `cargo install iroh-relay`).
+
+If you'd rather do it by hand, the manual steps live in [`.claude/skills/cc-connect-relay-setup/SKILL.md`](.claude/skills/cc-connect-relay-setup/SKILL.md) — copy each `ssh <target> '…'` block into your terminal.
+
+#### What runs where
+
+```
+your-laptop                   your-server                          their-laptop
+                              ┌────────────────────────┐
+cc-connect chat ─────────────►│ nginx :443 (TLS)       │◄───────── cc-connect chat
+   (ticket has relay URL)     │ ▼ proxy 127.0.0.1:8443 │              (same relay)
+                              │ iroh-relay (systemd)   │
+                              └────────────────────────┘
+```
+
+iroh-relay sees only QUIC-encrypted traffic; it cannot read message contents (BLAKE3 + per-session keys). It does see NodeId pairs + traffic volume.
 
 ### Configure your displayed name (optional)
 
