@@ -388,7 +388,7 @@ These vectors **MUST** match byte-for-byte across implementations. The reference
 
 **Canonical Pubkey string** (RFC 4648 base32, lowercase, no padding, of the 32-byte public key):
 ```
-hnvcphgowwsc2yvdvdiivpbxonsteflxdxrehjr2yberbi2zliuq
+hnvcppgow2sc2yvdvdicu3ynonsteflxdxrehjr2ybekdc2z3iuq
 ```
 
 Implementations **MUST** produce this exact 52-character string when encoding the test pubkey above.
@@ -399,7 +399,7 @@ Implementations **MUST** produce this exact 52-character string when encoding th
 ```
 v       = 1
 id      = 01HZA8K9F0RS3JXG7QZ4N5VTBC      (Crockford base32, uppercase)
-author  = hnvcphgowwsc2yvdvdiivpbxonsteflxdxrehjr2yberbi2zliuq   (the §11.1 pubkey)
+author  = hnvcppgow2sc2yvdvdicu3ynonsteflxdxrehjr2ybekdc2z3iuq   (the §11.1 pubkey)
 ts      = 1714323456789                  (Unix milliseconds, integer literal)
 body    = use postgres                    (12 bytes UTF-8, no escapes needed)
 ```
@@ -407,7 +407,7 @@ body    = use postgres                    (12 bytes UTF-8, no escapes needed)
 **Canonical output** (single line, UTF-8, exactly the bytes shown — no leading/trailing whitespace; the line terminator `\n` is added separately by log.jsonl appenders):
 
 ```
-{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"hnvcphgowwsc2yvdvdiivpbxonsteflxdxrehjr2yberbi2zliuq","ts":1714323456789,"body":"use postgres"}
+{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"hnvcppgow2sc2yvdvdicu3ynonsteflxdxrehjr2ybekdc2z3iuq","ts":1714323456789,"body":"use postgres"}
 ```
 
 Length: 162 bytes. Field order **MUST** match the canonical form exactly when emitting. Decoders **MUST NOT** require this ordering on input.

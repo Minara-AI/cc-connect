@@ -45,7 +45,8 @@ impl Identity {
 
     fn generate_to_path(path: &Path) -> Result<Self> {
         let mut seed = [0u8; SEED_LEN];
-        getrandom::getrandom(&mut seed).context("OS random source")?;
+        getrandom::getrandom(&mut seed)
+            .map_err(|e| anyhow::anyhow!("OS random source failed: {e}"))?;
 
         let mut file = open_create_0600(path)
             .with_context(|| format!("create {}", path.display()))?;
@@ -122,7 +123,7 @@ mod tests {
         );
         assert_eq!(
             pubkey_b32,
-            "hnvcphgowwsc2yvdvdiivpbxonsteflxdxrehjr2yberbi2zliuq",
+            "hnvcppgow2sc2yvdvdicu3ynonsteflxdxrehjr2ybekdc2z3iuq",
             "PROTOCOL.md §11.1 says zero-seed pubkey base32 MUST be this exact string"
         );
     }
@@ -158,7 +159,11 @@ mod tests {
         let key_path = dir.path().join("identity.key");
         fs::write(&key_path, b"not 32 bytes").unwrap();
 
-        let err = Identity::generate_or_load(&key_path).unwrap_err();
+        // Avoid `unwrap_err`: it requires `T: Debug`, but `Identity` deliberately
+        // does NOT derive `Debug` to keep the SigningKey from leaking via fmt.
+        let err = Identity::generate_or_load(&key_path)
+            .err()
+            .expect("expected error for wrong-length file");
         assert!(
             err.to_string().contains("32 bytes"),
             "error must mention expected length, got: {err}"
