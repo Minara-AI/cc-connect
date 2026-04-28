@@ -68,15 +68,20 @@ If you'd rather not run the script, the equivalent steps:
   "hooks": {
     "UserPromptSubmit": [
       {
-        "type": "command",
-        "command": "/absolute/path/to/cc-connect/target/release/cc-connect-hook"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/cc-connect/target/release/cc-connect-hook"
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-   Use the **absolute path** — `cc-connect-hook` will silently fail to inject if Claude Code's `PATH` doesn't include the binary's location.
+   Each entry under `UserPromptSubmit` is a `{matcher, hooks:[…]}` object — Claude Code's schema (an empty matcher matches every prompt). Use the **absolute path** — `cc-connect-hook` silently fails to inject if Claude Code's `PATH` doesn't include the binary's location.
 
 3. `./target/release/cc-connect doctor` — should report `[OK]` for the hook entry, `[--]` (info: not yet created) for the identity key and active-rooms dir, and ideally no `[FAIL]` lines. Restart Claude Code after editing.
 

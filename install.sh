@@ -101,20 +101,29 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 mkdir -p "$CLAUDE_DIR"
 
 install_hook_jq() {
-  # Pure-jq path. Idempotent: removes any existing entry pointing at our hook
-  # before re-adding, so re-runs don't duplicate.
+  # Pure-jq path. Idempotent: drops any entry already pointing at our hook
+  # (in either the correct nested {matcher, hooks:[…]} shape OR the legacy
+  # flat {type, command} shape that earlier install.sh runs wrote by
+  # mistake), then appends the correct nested entry.
   local hook_path="$1" tmp
   tmp="$(mktemp)"
   if [[ -s "$SETTINGS" ]]; then
     jq --arg path "$hook_path" '
       .hooks //= {} |
       .hooks.UserPromptSubmit //= [] |
-      .hooks.UserPromptSubmit |= map(select(.command != $path)) |
-      .hooks.UserPromptSubmit += [{type:"command", command:$path}]
+      .hooks.UserPromptSubmit |= map(select(
+        ((.hooks // []) | map(.command) | index($path)) == null
+        and (.command != $path)
+      )) |
+      .hooks.UserPromptSubmit += [
+        {matcher: "", hooks: [{type: "command", command: $path}]}
+      ]
     ' "$SETTINGS" > "$tmp"
   else
     jq -n --arg path "$hook_path" '
-      {hooks:{UserPromptSubmit:[{type:"command", command:$path}]}}
+      {hooks: {UserPromptSubmit: [
+        {matcher: "", hooks: [{type: "command", command: $path}]}
+      ]}}
     ' > "$tmp"
   fi
   mv "$tmp" "$SETTINGS"
@@ -131,8 +140,24 @@ if settings_path.exists() and settings_path.stat().st_size > 0:
     data = json.loads(settings_path.read_text())
 hooks = data.setdefault("hooks", {})
 ups = hooks.setdefault("UserPromptSubmit", [])
-ups[:] = [h for h in ups if not (isinstance(h, dict) and h.get("command") == hook_path)]
-ups.append({"type": "command", "command": hook_path})
+
+def points_at_us(entry):
+    if not isinstance(entry, dict):
+        return False
+    # Legacy shape that earlier install.sh runs wrote by mistake.
+    if entry.get("command") == hook_path:
+        return True
+    # Correct nested shape: {matcher, hooks: [{type, command}, …]}.
+    for sub in entry.get("hooks") or []:
+        if isinstance(sub, dict) and sub.get("command") == hook_path:
+            return True
+    return False
+
+ups[:] = [h for h in ups if not points_at_us(h)]
+ups.append({
+    "matcher": "",
+    "hooks": [{"type": "command", "command": hook_path}],
+})
 settings_path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 }
