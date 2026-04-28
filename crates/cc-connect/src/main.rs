@@ -6,6 +6,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod backfill;
 mod chat;
 mod doctor;
 mod host;

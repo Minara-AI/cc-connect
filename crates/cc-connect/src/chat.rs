@@ -35,6 +35,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::backfill::{try_backfill_from, BackfillHandler, BackfillOutcome, BACKFILL_ALPN};
 use crate::ticket_payload::TicketPayload;
 
 pub fn run(ticket_str: &str) -> Result<()> {
@@ -72,10 +73,13 @@ async fn run_async(ticket_str: &str) -> Result<()> {
         .await
         .context("bind iroh endpoint")?;
 
-    // 4. Spawn gossip + Router accepting GOSSIP_ALPN.
+    // 4. Spawn gossip + Router accepting both gossip and our Backfill ALPN.
     let gossip = Gossip::builder().spawn(endpoint.clone());
+    let log_path = log_path_for(&topic_id_hex);
+    let backfill_handler = BackfillHandler::new(log_path.clone());
     let _router = iroh::protocol::Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
+        .accept(BACKFILL_ALPN, backfill_handler)
         .spawn();
 
     // 5. Wait until online so subscription can talk to peers.
@@ -88,19 +92,50 @@ async fn run_async(ticket_str: &str) -> Result<()> {
     let topic_handle = gossip.subscribe_and_join(topic, peer_ids).await?;
     let (sender, mut receiver) = topic_handle.split();
 
-    // 7. Write active-rooms PID file *after* bootstrap completes (PROTOCOL.md
-    //    §8 + ADR-0003). Cleanup is via the guard's Drop.
+    // 7. Backfill from the first bootstrap peer (PROTOCOL.md §6.2). Single
+    //    attempt with a 5s timeout — if it fails, surface the marker and
+    //    proceed (no v0.1 retry across peers; that's a v0.2 polish).
+    let backfill_marker = if let Some(first_peer) = bootstrap_peers.first() {
+        if first_peer.id == endpoint.id() {
+            // We're the only peer in the room (host or self-only join);
+            // no one to ask. Skip silently.
+            None
+        } else {
+            match try_backfill_from(&endpoint, first_peer, None, &log_path).await {
+                BackfillOutcome::Filled { appended } if appended > 0 => {
+                    Some(format!(
+                        "[chatroom] (backfilled {appended} message{} from peer)",
+                        if appended == 1 { "" } else { "s" }
+                    ))
+                }
+                BackfillOutcome::Filled { .. } | BackfillOutcome::Empty => None,
+                BackfillOutcome::Timeout => {
+                    Some("[chatroom] (joined late, no history available)".to_string())
+                }
+                BackfillOutcome::Failed(msg) => {
+                    eprintln!("[chat] backfill failed: {msg}");
+                    Some("[chatroom] (joined late, no history available)".to_string())
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // 8. Write active-rooms PID file *after* bootstrap+backfill complete
+    //    (PROTOCOL.md §8 + ADR-0003). Cleanup via the guard's Drop.
     let pid_path = pid_file_path(&topic_id_hex)?;
     let _pid_guard = PidFileGuard::new(&pid_path)?;
 
-    // 8. Open the local log (append + read-back) for both halves.
-    let log_path = log_path_for(&topic_id_hex);
+    // 9. Open the local log (append + read-back) for the REPL half.
     let mut send_log = log_io::open_or_create_log(&log_path)?;
 
     println!();
     println!("Joined room: {} (peers: {})", &topic_id_hex[..12], bootstrap_count);
     println!("You are:     {}", &pubkey_string[..16]);
-    println!("(no Backfill yet in v0.1 — late joiners see only new messages)");
+    if let Some(marker) = &backfill_marker {
+        println!("{marker}");
+    }
     println!("Type to send. Ctrl-C / EOF to leave.");
     println!();
 
