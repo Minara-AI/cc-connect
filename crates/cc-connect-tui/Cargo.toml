@@ -19,6 +19,8 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 cc-connect = { path = "../cc-connect" }
 cc-connect-core = { path = "../cc-connect-core" }
 

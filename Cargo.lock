@@ -460,6 +460,8 @@ dependencies = [
  "futures-lite",
  "portable-pty",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tui-term",

@@ -11,7 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use cc_connect::ticket_payload::TicketPayload;
 use cc_connect_core::ticket::decode_room_code;
-use cc_connect_tui::RunOpts;
+use cc_connect_tui::{setup, RunOpts};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -30,12 +30,19 @@ enum Cmd {
     Start {
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
+        /// Trailing args forwarded to `claude`. Use `--` to separate, e.g.
+        /// `cc-connect-tui start -- --model opus --resume`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        claude_args: Vec<String>,
     },
     /// Join an existing room by ticket.
     Join {
         ticket: String,
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
+        /// Trailing args forwarded to `claude`. Use `--` to separate.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        claude_args: Vec<String>,
     },
 }
 
@@ -58,13 +65,27 @@ fn main() -> Result<()> {
 
     rt.block_on(async move {
         match cli.cmd {
-            Cmd::Start { relay } => start(relay.as_deref()).await,
-            Cmd::Join { ticket, relay } => join(&ticket, relay.as_deref()).await,
+            Cmd::Start { relay, claude_args } => {
+                start(relay.as_deref(), claude_args).await
+            }
+            Cmd::Join { ticket, relay, claude_args } => {
+                join(&ticket, relay.as_deref(), claude_args).await
+            }
         }
     })
 }
 
-async fn start(relay: Option<&str>) -> Result<()> {
+async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
+    // First-run wizard: hook + relay choice. Both prompt on stdin BEFORE
+    // we hold the alt-screen, so it's a normal terminal interaction.
+    if let Err(e) = setup::ensure_hook_installed() {
+        eprintln!("(setup: hook check failed: {e:#})");
+    }
+    let resolved_relay = setup::ensure_relay_choice(relay).unwrap_or_else(|e| {
+        eprintln!("(setup: relay prompt failed: {e:#}; defaulting to n0)");
+        None
+    });
+
     let exe = std::env::current_exe().context("current_exe")?;
     let cc_connect = exe
         .parent()
@@ -79,7 +100,7 @@ async fn start(relay: Option<&str>) -> Result<()> {
 
     let mut cmd = Command::new(&cc_connect);
     cmd.arg("host-bg").arg("start");
-    if let Some(r) = relay {
+    if let Some(r) = resolved_relay.as_deref() {
         cmd.arg("--relay").arg(r);
     }
     let out = cmd
@@ -105,20 +126,28 @@ async fn start(relay: Option<&str>) -> Result<()> {
         .ok_or_else(|| anyhow!("host-bg start did not print a ticket; output was:\n{stdout}"))?;
     println!("[room] daemon started, joining…");
 
-    enter_tui(ticket, relay).await
+    enter_tui(ticket, resolved_relay.as_deref(), claude_args).await
 }
 
-async fn join(ticket: &str, relay: Option<&str>) -> Result<()> {
-    enter_tui(ticket.to_string(), relay).await
+async fn join(ticket: &str, relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
+    if let Err(e) = setup::ensure_hook_installed() {
+        eprintln!("(setup: hook check failed: {e:#})");
+    }
+    enter_tui(ticket.to_string(), relay, claude_args).await
 }
 
-async fn enter_tui(ticket: String, relay: Option<&str>) -> Result<()> {
+async fn enter_tui(
+    ticket: String,
+    relay: Option<&str>,
+    claude_args: Vec<String>,
+) -> Result<()> {
     let topic_hex = topic_hex_from_ticket(&ticket)?;
-    let claude_argv = std::env::var("CC_CONNECT_CLAUDE_BIN")
+    let claude_bin = std::env::var("CC_CONNECT_CLAUDE_BIN")
         .ok()
         .filter(|s| !s.is_empty())
-        .map(|s| vec![s])
-        .unwrap_or_else(|| vec!["claude".to_string()]);
+        .unwrap_or_else(|| "claude".to_string());
+    let mut claude_argv = vec![claude_bin];
+    claude_argv.extend(claude_args);
     let claude_cwd: Option<PathBuf> = std::env::current_dir().ok();
 
     let opts = RunOpts {

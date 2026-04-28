@@ -7,24 +7,31 @@ use anyhow::{anyhow, Context, Result};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-pub fn run_start(relay: Option<&str>) -> Result<()> {
+pub fn run_start(relay: Option<&str>, claude_args: &[String]) -> Result<()> {
     let tui = locate_tui_bin()?;
     let mut cmd = Command::new(&tui);
     cmd.arg("start");
     if let Some(r) = relay {
         cmd.arg("--relay").arg(r);
     }
-    // exec replaces this process — no nesting, the TUI owns the terminal.
+    if !claude_args.is_empty() {
+        cmd.arg("--");
+        cmd.args(claude_args);
+    }
     let err = cmd.exec();
     Err(anyhow!("exec {} failed: {err}", tui.display()))
 }
 
-pub fn run_join(ticket: &str, relay: Option<&str>) -> Result<()> {
+pub fn run_join(ticket: &str, relay: Option<&str>, claude_args: &[String]) -> Result<()> {
     let tui = locate_tui_bin()?;
     let mut cmd = Command::new(&tui);
     cmd.arg("join").arg(ticket);
     if let Some(r) = relay {
         cmd.arg("--relay").arg(r);
+    }
+    if !claude_args.is_empty() {
+        cmd.arg("--");
+        cmd.args(claude_args);
     }
     let err = cmd.exec();
     Err(anyhow!("exec {} failed: {err}", tui.display()))
