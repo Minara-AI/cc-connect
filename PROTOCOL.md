@@ -453,11 +453,11 @@ That is: `<` and `>` pass through unescaped, `é` is emitted as its raw UTF-8 by
 
 **Expected stdout** (UTF-8, exactly these bytes, with `\n` line terminators):
 ```
-[chatroom @bob 00:01Z] reply
-[chatroom @alice 00:02Z] ack
+[chatroom @bob 23:07Z] reply
+[chatroom @alice 23:08Z] ack
 ```
 
-Note: `00:01Z` and `00:02Z` are derived from `ts` by `(ts / 60000) % 1440` formatted as `HH:MM` UTC. (1714000060000 ms → 28566667 minutes → 28566667 mod 1440 = 1 minute past midnight UTC → `00:01Z`.)
+Note: `23:07Z` and `23:08Z` are derived from `ts` by `(ts / 60000) % 1440` formatted as `HH:MM` UTC. (1714000060000 ms → 28566667 minutes since epoch → 28566667 mod 1440 = 1387 minutes-of-day → 23:07 UTC.)
 
 After the Hook completes, the cursor file **MUST** atomically contain `M3`'s ULID.
 

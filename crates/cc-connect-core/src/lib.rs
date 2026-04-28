@@ -4,6 +4,7 @@
 //! specification this crate implements.
 
 pub mod cursor_io;
+pub mod hook_format;
 pub mod identity;
 pub mod log_io;
 pub mod message;
