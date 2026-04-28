@@ -13,32 +13,32 @@
 
 use anyhow::{Context, Result};
 use cc_connect_core::{identity::Identity, ticket::encode_room_code};
-use iroh::{Endpoint, SecretKey};
+use iroh::{endpoint::RelayMode, Endpoint, SecretKey};
 use iroh_gossip::{net::{Gossip, GOSSIP_ALPN}, proto::TopicId};
 use std::path::PathBuf;
 
 use crate::ticket_payload::TicketPayload;
 
-pub fn run() -> Result<()> {
+pub fn run(no_relay: bool) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
-    rt.block_on(run_async())
+    rt.block_on(run_async(no_relay))
 }
 
-async fn run_async() -> Result<()> {
+async fn run_async(no_relay: bool) -> Result<()> {
     // Step 1: load or create the local Identity.
     let identity = load_identity()?;
     let secret_key = SecretKey::from_bytes(&identity.seed_bytes());
 
     // Step 2: build the iroh Endpoint with our key. PROTOCOL.md §2 binds
     // the iroh `EndpointId` to our Pubkey via this same secret.
-    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(secret_key)
-        .bind()
-        .await
-        .context("bind iroh endpoint")?;
+    let mut builder = Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key);
+    if no_relay {
+        builder = builder.relay_mode(RelayMode::Disabled);
+    }
+    let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 
     // Step 3: generate a fresh topic ID.
     let mut topic_bytes = [0u8; 32];
@@ -52,9 +52,13 @@ async fn run_async() -> Result<()> {
         .accept(GOSSIP_ALPN, gossip.clone())
         .spawn();
 
-    // Step 5: wait for the endpoint to be online (relay home + addresses
-    // discoverable) so the printed ticket has working bootstrap info.
-    endpoint.online().await;
+    // Step 5: wait for the endpoint to be online so the printed ticket has
+    // working bootstrap info. Skip when relay is disabled — `online()`
+    // blocks on a relay-home which won't ever land in that mode (per the
+    // iroh-gossip examples/chat.rs convention).
+    if !no_relay {
+        endpoint.online().await;
+    }
 
     // Step 6: assemble and encode the ticket.
     let our_addr = endpoint.addr();

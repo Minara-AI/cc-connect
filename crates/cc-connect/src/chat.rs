@@ -25,7 +25,10 @@ use cc_connect_core::{
     ticket::decode_room_code,
 };
 use futures_lite::StreamExt;
-use iroh::{address_lookup::memory::MemoryLookup, endpoint::presets, Endpoint, SecretKey};
+use iroh::{
+    address_lookup::memory::MemoryLookup, endpoint::presets, endpoint::RelayMode, Endpoint,
+    SecretKey,
+};
 use iroh_gossip::{
     api::Event,
     net::{Gossip, GOSSIP_ALPN},
@@ -38,15 +41,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::backfill::{try_backfill_from, BackfillHandler, BackfillOutcome, BACKFILL_ALPN};
 use crate::ticket_payload::TicketPayload;
 
-pub fn run(ticket_str: &str) -> Result<()> {
+pub fn run(ticket_str: &str, no_relay: bool) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
-    rt.block_on(run_async(ticket_str))
+    rt.block_on(run_async(ticket_str, no_relay))
 }
 
-async fn run_async(ticket_str: &str) -> Result<()> {
+async fn run_async(ticket_str: &str, no_relay: bool) -> Result<()> {
     // 1. Decode ticket → topic + bootstrap peers.
     let payload_bytes = decode_room_code(ticket_str)
         .with_context(|| format!("decode room code: {ticket_str:.20}…"))?;
@@ -66,12 +69,13 @@ async fn run_async(ticket_str: &str) -> Result<()> {
     for peer in &bootstrap_peers {
         memory_lookup.add_endpoint_info(peer.clone());
     }
-    let endpoint = Endpoint::builder(presets::N0)
+    let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
-        .address_lookup(memory_lookup.clone())
-        .bind()
-        .await
-        .context("bind iroh endpoint")?;
+        .address_lookup(memory_lookup.clone());
+    if no_relay {
+        builder = builder.relay_mode(RelayMode::Disabled);
+    }
+    let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 
     // 4. Spawn gossip + Router accepting both gossip and our Backfill ALPN.
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -82,8 +86,12 @@ async fn run_async(ticket_str: &str) -> Result<()> {
         .accept(BACKFILL_ALPN, backfill_handler)
         .spawn();
 
-    // 5. Wait until online so subscription can talk to peers.
-    endpoint.online().await;
+    // 5. Wait until online so subscription can talk to peers. Skip when
+    //    relay is disabled — `online()` blocks on a relay home that
+    //    won't ever land in that mode.
+    if !no_relay {
+        endpoint.online().await;
+    }
 
     // 6. Subscribe to the gossip topic with the bootstrap peers as initial
     //    contacts. Returns a GossipTopic we split into (sender, receiver).
