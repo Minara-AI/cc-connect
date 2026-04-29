@@ -1,0 +1,139 @@
+name: Release
+
+# Triggered when a `v*` tag is pushed (e.g. `v0.1.0`, `v0.2.0-rc.1`).
+# Builds the workspace + chat-ui on each supported platform, packages the
+# binaries into a tarball, and attaches them to a GitHub release.
+#
+# Note: cc-connect is not currently published to crates.io because of the
+# vendored ed25519 patch (see TODOS.md). When that patch is dropped, add a
+# `cargo publish` step here gated on the version not being a pre-release.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Must already exist on origin."
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build Rust workspace
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Build chat-ui
+        working-directory: chat-ui
+        run: |
+          bun install --frozen-lockfile
+          bun build src/main.tsx --compile --outfile=../target/${{ matrix.target }}/release/cc-chat-ui
+
+      - name: Package
+        id: pkg
+        shell: bash
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${ref#v}"
+          name="cc-connect-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          for bin in cc-connect cc-connect-hook cc-chat-ui; do
+            cp "target/${{ matrix.target }}/release/${bin}" "dist/${name}/"
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE SECURITY.md "dist/${name}/"
+          cd dist && tar -czf "${name}.tar.gz" "${name}"
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          body: |
+            ## Install
+
+            Download the tarball for your platform below, extract, and put the binaries on your `PATH`. Or run the installer from a fresh clone:
+
+            ```bash
+            git clone https://github.com/Minara-AI/cc-connect.git
+            cd cc-connect
+            git checkout ${{ github.event.inputs.tag || github.ref_name }}
+            ./install.sh
+            ```
+
+            See [`SECURITY.md`](https://github.com/Minara-AI/cc-connect/blob/${{ github.event.inputs.tag || github.ref_name }}/SECURITY.md) before inviting anyone to a Room.
+
+            ## Verify
+
+            Each tarball ships with a sibling `.sha256` file:
+
+            ```bash
+            shasum -a 256 -c cc-connect-*.tar.gz.sha256
+            ```
