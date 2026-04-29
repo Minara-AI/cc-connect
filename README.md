@@ -6,6 +6,8 @@ The big idea: don't multiplex one Claude across humans, multiplex shared context
 
 > v0.1 status: feature-complete in commits, 76 tests passing, full protocol drafted in [`PROTOCOL.md`](./PROTOCOL.md). Vendored ed25519 patches block crates.io publish until upstream releases an `ed25519-dalek` against fixed `pkcs8` (see [`TODOS.md`](./TODOS.md)).
 
+> ⚠ **Read [`SECURITY.md`](./SECURITY.md) before inviting anyone to a Room.** A Ticket is a capability — anyone holding it can read your chat, drop files, and prompt-inject your Claude. v0.1 has no end-to-end Message signatures and no Ticket revocation. The threat model lays out exactly what is and isn't protected.
+
 ---
 
 ## How the magic moment works
