@@ -210,6 +210,33 @@ Create `~/.cc-connect/nicknames.json`:
 
 Maps Pubkey strings (full 52-char base32) to a human-readable nickname. The mapping is local-only — Bob doesn't see what Alice nicknamed him; each peer maintains their own.
 
+### Letting Claude talk back (MCP)
+
+The TUI starts an MCP server (`cc-connect-mcp`) the first time you run it. It exposes five tools to the embedded Claude:
+
+| Tool             | What it does |
+|------------------|--------------|
+| `cc_send`        | Broadcast a chat message into your room |
+| `cc_at`          | Same as send, but with `@<nick>` prefix (mentions) |
+| `cc_drop`        | Share a local file with peers (iroh-blobs) |
+| `cc_recent`      | Last N chat lines from this room's log |
+| `cc_list_files`  | Files dropped into the room (with local paths) |
+
+How the routing works:
+
+```
+cc-connect-tui  ──spawns──►  claude  ──spawns──►  cc-connect-mcp
+   |                            ↑                       │
+   | sets CC_CONNECT_ROOM env   | inherits env          │ dials
+   ▼                            │                       ▼
+chat_session  ◄─────────────────│────────  /tmp/cc-connect-$UID/sockets/<topic>.sock
+   (owns iroh + log + IPC)
+```
+
+The MCP server reads `CC_CONNECT_ROOM` from its environment (set by the TUI, inherited through Claude Code) and dials the chat session's local Unix socket. Tools fail cleanly with "no active cc-connect room" if you start `claude` standalone without the TUI.
+
+Try it: in a TUI claude pane, ask "send '@all standup in 5' to the room". Claude calls `cc_at` and the message lands in everyone's chat scrollback.
+
 ---
 
 ## Two-laptop demo procedure
@@ -252,9 +279,10 @@ cc-connect/
 ├── CONTEXT.md               Domain glossary (DDD-style)
 ├── docs/adr/                Architecture decision records (1-4)
 ├── crates/
-│   ├── cc-connect-core/     Protocol primitives library (71 tests)
+│   ├── cc-connect-core/     Protocol primitives library (74 tests)
 │   ├── cc-connect/          host / chat / room / host-bg / doctor binary
 │   ├── cc-connect-tui/      TUI binary (cc-connect-tui) + library
+│   ├── cc-connect-mcp/      MCP stdio server (Claude Code → chat tools)
 │   └── cc-connect-hook/     UserPromptSubmit hook binary
 ├── tests/                   FAKE-CLAUDE-CODE integration test
 ├── vendored/                Patched ed25519 + ed25519-dalek (temporary,

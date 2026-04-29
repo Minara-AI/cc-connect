@@ -81,6 +81,9 @@ async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
     if let Err(e) = setup::ensure_hook_installed() {
         eprintln!("(setup: hook check failed: {e:#})");
     }
+    if let Err(e) = setup::ensure_mcp_installed() {
+        eprintln!("(setup: mcp install failed: {e:#})");
+    }
     if let Err(e) = setup::ensure_self_nick() {
         eprintln!("(setup: nick prompt failed: {e:#})");
     }
@@ -135,6 +138,9 @@ async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
 async fn join(ticket: &str, relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
     if let Err(e) = setup::ensure_hook_installed() {
         eprintln!("(setup: hook check failed: {e:#})");
+    }
+    if let Err(e) = setup::ensure_mcp_installed() {
+        eprintln!("(setup: mcp install failed: {e:#})");
     }
     if let Err(e) = setup::ensure_self_nick() {
         eprintln!("(setup: nick prompt failed: {e:#})");

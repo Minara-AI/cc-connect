@@ -107,7 +107,11 @@ pub struct ChatHandle {
 pub async fn spawn(cfg: ChatSessionConfig) -> Result<ChatHandle> {
     let (display_tx, display_rx) = mpsc::channel::<DisplayLine>(100);
     let (input_tx, input_rx) = mpsc::channel::<String>(32);
-    let join = tokio::spawn(run_session(cfg, display_tx, input_rx));
+    // Give run_session its own Sender clone so the IPC server (Claude
+    // Code's MCP tools) can forward commands through the same input
+    // pipeline as the keyboard.
+    let ipc_input_tx = input_tx.clone();
+    let join = tokio::spawn(run_session(cfg, display_tx, input_rx, ipc_input_tx));
     Ok(ChatHandle {
         display_rx,
         input_tx,
@@ -119,6 +123,7 @@ async fn run_session(
     cfg: ChatSessionConfig,
     display_tx: mpsc::Sender<DisplayLine>,
     mut input_rx: mpsc::Receiver<String>,
+    ipc_input_tx: mpsc::Sender<String>,
 ) -> Result<()> {
     // 1. Decode ticket → topic + bootstrap peers.
     let payload_bytes = decode_room_code(&cfg.ticket)
@@ -215,6 +220,38 @@ async fn run_session(
     // 8. Active-rooms PID file (PROTOCOL §8 + ADR-0003).
     let pid_path = pid_file_path(&topic_id_hex)?;
     let _pid_guard = PidFileGuard::new(&pid_path)?;
+
+    // 8.5. IPC unix-socket server. Lets cc-connect-mcp (and any other
+    //      local helper) drive this session — sending chat lines on
+    //      Claude Code's behalf, querying recent log, etc.
+    let ipc_socket_path = ipc_socket_path(&topic_id_hex)?;
+    let _ipc_guard = IpcSocketGuard::new(&ipc_socket_path);
+    let ipc_listener = match tokio::net::UnixListener::bind(&ipc_socket_path) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            let _ = display_tx
+                .send(DisplayLine::Warn(format!(
+                    "[chat] IPC socket bind failed ({}): {e}",
+                    ipc_socket_path.display()
+                )))
+                .await;
+            None
+        }
+    };
+    let ipc_handle = if let Some(listener) = ipc_listener {
+        let _ = std::fs::set_permissions(
+            &ipc_socket_path,
+            std::fs::Permissions::from_mode(0o600),
+        );
+        let ipc_input_tx = ipc_input_tx.clone();
+        let ipc_log_path = log_path.clone();
+        let ipc_files_dir = files_dir_for(&topic_id_hex);
+        Some(tokio::spawn(async move {
+            ipc_server_loop(listener, ipc_input_tx, ipc_log_path, ipc_files_dir).await
+        }))
+    } else {
+        None
+    };
 
     // 9. Open the local log for the send half.
     let mut send_log = log_io::open_or_create_log(&log_path)?;
@@ -409,7 +446,11 @@ async fn run_session(
         }
     };
 
-    // 13. Cleanup. PidFileGuard's Drop removes the active-rooms file.
+    // 13. Cleanup. PidFileGuard's + IpcSocketGuard's Drop remove the
+    //     active-rooms file + the unix socket.
+    if let Some(h) = ipc_handle {
+        h.abort();
+    }
     listener_handle.abort();
     drop(sender);
     drop(gossip);
@@ -600,6 +641,265 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+// ---------- IPC unix-socket server -----------------------------------------
+
+fn ipc_socket_path(topic_id_hex: &str) -> Result<PathBuf> {
+    let uid = rustix::process::geteuid().as_raw();
+    let dir = std::env::temp_dir()
+        .join(format!("cc-connect-{uid}"))
+        .join("sockets");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("create_dir_all {}", dir.display()))?;
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    let path = dir.join(format!("{topic_id_hex}.sock"));
+    let _ = std::fs::remove_file(&path); // sweep stale
+    Ok(path)
+}
+
+/// Removes the unix socket file on Drop so the next chat session can rebind.
+struct IpcSocketGuard {
+    path: PathBuf,
+}
+
+impl IpcSocketGuard {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for IpcSocketGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Drives one accepted IPC client.
+///
+/// Wire format: newline-delimited JSON, one command per line, one
+/// response per command. Responses are a single JSON object with
+/// `{"ok": bool}` plus optional `data` / `err`.
+async fn ipc_server_loop(
+    listener: tokio::net::UnixListener,
+    input_tx: mpsc::Sender<String>,
+    log_path: PathBuf,
+    files_dir: PathBuf,
+) {
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let input_tx = input_tx.clone();
+        let log_path = log_path.clone();
+        let files_dir = files_dir.clone();
+        tokio::spawn(async move {
+            handle_ipc_client(stream, input_tx, log_path, files_dir).await
+        });
+    }
+}
+
+async fn handle_ipc_client(
+    stream: tokio::net::UnixStream,
+    input_tx: mpsc::Sender<String>,
+    log_path: PathBuf,
+    files_dir: PathBuf,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = match reader.read_line(&mut line).await {
+            Ok(n) => n,
+            Err(_) => return,
+        };
+        if n == 0 {
+            return;
+        }
+        let resp = dispatch_ipc(&line, &input_tx, &log_path, &files_dir).await;
+        let mut out = serde_json::to_vec(&resp).unwrap_or_else(|_| b"{\"ok\":false,\"err\":\"encode\"}".to_vec());
+        out.push(b'\n');
+        if write_half.write_all(&out).await.is_err() {
+            return;
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct IpcResponse {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    err: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
+}
+
+async fn dispatch_ipc(
+    raw: &str,
+    input_tx: &mpsc::Sender<String>,
+    log_path: &Path,
+    files_dir: &Path,
+) -> IpcResponse {
+    let v: serde_json::Value = match serde_json::from_str(raw.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return IpcResponse {
+                ok: false,
+                err: Some(format!("PARSE_ERROR: {e}")),
+                data: None,
+            }
+        }
+    };
+    let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("");
+    match action {
+        "send" => {
+            let body = match v.get("body").and_then(|x| x.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return IpcResponse {
+                        ok: false,
+                        err: Some("MISSING_BODY".into()),
+                        data: None,
+                    }
+                }
+            };
+            let _ = input_tx.send(body).await;
+            ok_response()
+        }
+        "at" => {
+            let nick = v.get("nick").and_then(|x| x.as_str()).unwrap_or("");
+            let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("");
+            if nick.is_empty() || body.is_empty() {
+                return IpcResponse {
+                    ok: false,
+                    err: Some("MISSING_NICK_OR_BODY".into()),
+                    data: None,
+                };
+            }
+            let _ = input_tx.send(format!("@{nick} {body}")).await;
+            ok_response()
+        }
+        "drop" => {
+            let path = match v.get("path").and_then(|x| x.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return IpcResponse {
+                        ok: false,
+                        err: Some("MISSING_PATH".into()),
+                        data: None,
+                    }
+                }
+            };
+            let _ = input_tx.send(format!("/drop {path}")).await;
+            ok_response()
+        }
+        "recent" => {
+            let limit = v.get("limit").and_then(|x| x.as_u64()).unwrap_or(20) as usize;
+            match recent_messages(log_path, limit) {
+                Ok(msgs) => IpcResponse {
+                    ok: true,
+                    err: None,
+                    data: Some(serde_json::json!({ "messages": msgs })),
+                },
+                Err(e) => IpcResponse {
+                    ok: false,
+                    err: Some(format!("{e:#}")),
+                    data: None,
+                },
+            }
+        }
+        "list_files" => {
+            let limit = v.get("limit").and_then(|x| x.as_u64()).unwrap_or(50) as usize;
+            match list_files_in(files_dir, limit) {
+                Ok(entries) => IpcResponse {
+                    ok: true,
+                    err: None,
+                    data: Some(serde_json::json!({ "files": entries })),
+                },
+                Err(e) => IpcResponse {
+                    ok: false,
+                    err: Some(format!("{e:#}")),
+                    data: None,
+                },
+            }
+        }
+        other => IpcResponse {
+            ok: false,
+            err: Some(format!("UNKNOWN_ACTION: {other}")),
+            data: None,
+        },
+    }
+}
+
+fn ok_response() -> IpcResponse {
+    IpcResponse {
+        ok: true,
+        err: None,
+        data: None,
+    }
+}
+
+fn recent_messages(log_path: &Path, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let mut log_file = log_io::open_or_create_log(log_path)?;
+    let all = log_io::read_since(&mut log_file, None)?;
+    let take_n = all.len().saturating_sub(limit);
+    let recent = &all[take_n..];
+    Ok(recent
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "author": m.author,
+                "nick": m.nick,
+                "ts": m.ts,
+                "kind": m.kind,
+                "body": m.body,
+            })
+        })
+        .collect())
+}
+
+fn list_files_in(files_dir: &Path, limit: usize) -> Result<Vec<serde_json::Value>> {
+    if !files_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(files_dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            if !m.is_file() {
+                return None;
+            }
+            let mtime = m.modified().ok()?;
+            Some((mtime, e.path()))
+        })
+        .collect();
+    // Most recent first.
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    entries.truncate(limit);
+    Ok(entries
+        .into_iter()
+        .map(|(mtime, path)| {
+            let secs = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "name": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                "size": size,
+                "mtime": secs,
+            })
+        })
+        .collect())
+}
+
+// ---------- active-rooms PID file ------------------------------------------
 
 struct PidFileGuard {
     path: PathBuf,
