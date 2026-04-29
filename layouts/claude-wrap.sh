@@ -36,7 +36,15 @@ fi
 PROMPT_FILE="${CC_CONNECT_AUTO_REPLY_FILE:-${TMPDIR:-/tmp}/cc-connect-$(id -u)/auto-reply.md}"
 CLAUDE="${CC_CONNECT_CLAUDE_BIN:-claude}"
 
+# Initial user prompt that boots claude straight into the listener
+# loop. Claude Code doesn't auto-execute its system prompt — it sits
+# idle until something arrives in the user channel — so we hand it a
+# tiny "begin" message. Visible in the first turn of the transcript;
+# the system prompt installed by --append-system-prompt explains how
+# to interpret it.
+BOOTSTRAP_PROMPT="cc-connect ambient mode: enter the listener loop now (call cc_wait_for_mention with no since_id, follow the directive in your system prompt)."
+
 if [ -z "${CC_CONNECT_NO_AUTO_REPLY:-}" ] && [ -f "$PROMPT_FILE" ]; then
-  exec "$CLAUDE" --append-system-prompt "$(cat "$PROMPT_FILE")" "$@"
+  exec "$CLAUDE" --append-system-prompt "$(cat "$PROMPT_FILE")" "$@" "$BOOTSTRAP_PROMPT"
 fi
 exec "$CLAUDE" "$@"
