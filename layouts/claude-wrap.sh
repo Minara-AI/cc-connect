@@ -36,13 +36,20 @@ fi
 PROMPT_FILE="${CC_CONNECT_AUTO_REPLY_FILE:-${TMPDIR:-/tmp}/cc-connect-$(id -u)/auto-reply.md}"
 CLAUDE="${CC_CONNECT_CLAUDE_BIN:-claude}"
 
-# Initial user prompt that boots claude straight into the listener
-# loop. Claude Code doesn't auto-execute its system prompt — it sits
-# idle until something arrives in the user channel — so we hand it a
-# tiny "begin" message. Visible in the first turn of the transcript;
-# the system prompt installed by --append-system-prompt explains how
-# to interpret it.
-BOOTSTRAP_PROMPT="cc-connect ambient mode: enter the listener loop now (call cc_wait_for_mention with no since_id, follow the directive in your system prompt)."
+# Initial user prompt that boots claude straight into "say hello,
+# then listen". Claude Code doesn't auto-execute its system prompt —
+# it sits idle until something arrives on the user channel — so we
+# hand it a tiny first turn. Two steps:
+#   1. Send a brief greeting via cc_send so peers see this AI just
+#      came online (peers are humans + other AIs in the room).
+#   2. Enter the ambient listener loop per the system prompt.
+# The wording stays prescriptive but leaves the greeting itself to
+# claude's discretion — it knows the room's tone better than we do.
+BOOTSTRAP_PROMPT="You just joined the cc-connect room. Do these two things in order:
+
+1. Send a single brief greeting line to the room via the \`cc_send\` MCP tool. Terse, dev-to-dev, one sentence. Don't introduce yourself with a long bio; the room already sees your nick. Skip if you've been told elsewhere not to greet.
+
+2. Immediately call \`cc_wait_for_mention\` (no \`since_id\` on this first call). Follow the listener-loop directive in your system prompt from there: re-arm on \`null\`, reply via \`cc_send\`/\`cc_at\` on a hit, then re-arm with \`since_id = id\`."
 
 if [ -z "${CC_CONNECT_NO_AUTO_REPLY:-}" ] && [ -f "$PROMPT_FILE" ]; then
   exec "$CLAUDE" --append-system-prompt "$(cat "$PROMPT_FILE")" "$@" "$BOOTSTRAP_PROMPT"
