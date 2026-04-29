@@ -132,7 +132,7 @@ async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
         .ok_or_else(|| anyhow!("host-bg start did not print a ticket; output was:\n{stdout}"))?;
     println!("[room] daemon started, joining…");
 
-    enter_tui(ticket, resolved_relay.as_deref(), claude_args).await
+    enter_tui(ticket, resolved_relay.as_deref(), claude_args, /* hosting */ true).await
 }
 
 async fn join(ticket: &str, relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
@@ -145,13 +145,14 @@ async fn join(ticket: &str, relay: Option<&str>, claude_args: Vec<String>) -> Re
     if let Err(e) = setup::ensure_self_nick() {
         eprintln!("(setup: nick prompt failed: {e:#})");
     }
-    enter_tui(ticket.to_string(), relay, claude_args).await
+    enter_tui(ticket.to_string(), relay, claude_args, /* hosting */ false).await
 }
 
 async fn enter_tui(
     ticket: String,
     relay: Option<&str>,
     claude_args: Vec<String>,
+    hosting: bool,
 ) -> Result<()> {
     let topic_hex = topic_hex_from_ticket(&ticket)?;
     let claude_bin = std::env::var("CC_CONNECT_CLAUDE_BIN")
@@ -169,6 +170,7 @@ async fn enter_tui(
         relay: relay.map(|s| s.to_string()),
         claude_argv,
         claude_cwd,
+        hosting,
     };
     cc_connect_tui::run(opts).await
 }

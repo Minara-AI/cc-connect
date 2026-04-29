@@ -10,6 +10,7 @@ pub mod chat_pane;
 pub mod claude_pane;
 pub mod event_loop;
 pub mod setup;
+pub mod tabs;
 pub mod theme;
 
 pub use event_loop::{run, RunOpts};

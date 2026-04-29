@@ -92,6 +92,17 @@ pub fn chat_mention_body() -> Style {
     Style::default().fg(ROSEWATER).add_modifier(Modifier::BOLD)
 }
 
+// Tab strip.
+pub fn tab_active() -> Style {
+    Style::default()
+        .bg(MAUVE)
+        .fg(CRUST)
+        .add_modifier(Modifier::BOLD)
+}
+pub fn tab_inactive() -> Style {
+    Style::default().fg(SUBTEXT0)
+}
+
 pub fn input_prompt(focused: bool) -> Style {
     if focused {
         Style::default().fg(PEACH).add_modifier(Modifier::BOLD)

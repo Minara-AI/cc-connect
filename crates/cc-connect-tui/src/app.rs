@@ -1,11 +1,10 @@
-//! In-process state shared between the render loop and the input handler.
+//! TUI app state, multi-tab edition.
 //!
-//! Two panes:
-//!  - `Chat`  — native ratatui rendering: scrollback + input textbox.
-//!  - `Claude` — vt100-emulated screen fed from the PTY's stdout, rendered
-//!    via `tui_term::widget::PseudoTerminal`.
+//! - One [`crate::tabs::RoomTab`] per joined room. Each owns its own
+//!   chat session + claude PTY + vt100 parser + scrollback.
+//! - The `App` struct is the tab manager + overlay state + global flags.
 
-use std::collections::VecDeque;
+use crate::tabs::TabSet;
 
 /// Which pane currently has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,59 +33,43 @@ pub enum ChatLineKind {
     Warn,
 }
 
-/// All TUI state. The render loop pulls from this; the event loop pushes.
+/// Modal overlay drawn on top of the main view.
+#[derive(Debug)]
+pub enum Overlay {
+    /// "[j]oin existing  [h]ost new" picker for Ctrl-N.
+    NewRoomPicker,
+    /// Text input for a ticket on the join path.
+    JoinTicketPrompt {
+        buf: String,
+    },
+    /// "Stop the host daemon too? [y/N]" while closing a hosted tab.
+    ConfirmCloseHost {
+        topic_hex: String,
+    },
+    /// Status / error popup with a message; dismiss with Esc.
+    Notice(String),
+}
+
+/// All shared TUI state.
 pub struct App {
+    pub tabs: TabSet,
     pub focus: Focus,
-    pub topic_short: String,
-    pub ticket: String,
-    pub chat_lines: VecDeque<ChatLine>,
-    pub input_buf: String,
-    pub vt_parser: vt100::Parser,
-    /// Set true to exit the render loop next tick.
+    pub overlay: Option<Overlay>,
     pub should_exit: bool,
-    /// Last status banner shown in the header (peer count etc.).
+    pub self_nick: Option<String>,
     pub status: String,
 }
 
-const CHAT_SCROLLBACK_CAP: usize = 1024;
-
 impl App {
-    pub fn new(topic_hex: &str, ticket: &str, rows: u16, cols: u16) -> Self {
-        let topic_short = topic_hex
-            .chars()
-            .take(12.min(topic_hex.len()))
-            .collect::<String>();
+    pub fn new(self_nick: Option<String>) -> Self {
         Self {
+            tabs: TabSet::new(),
             focus: Focus::Chat,
-            topic_short,
-            ticket: ticket.to_string(),
-            chat_lines: VecDeque::new(),
-            input_buf: String::new(),
-            vt_parser: vt100::Parser::new(rows, cols, 0),
+            overlay: None,
             should_exit: false,
+            self_nick,
             status: String::new(),
         }
-    }
-
-    pub fn push_chat(&mut self, kind: ChatLineKind, text: impl Into<String>) {
-        if self.chat_lines.len() >= CHAT_SCROLLBACK_CAP {
-            self.chat_lines.pop_front();
-        }
-        self.chat_lines.push_back(ChatLine {
-            kind,
-            text: text.into(),
-        });
-    }
-
-    /// Feed a chunk of bytes from the PTY into the vt100 parser.
-    pub fn feed_pty_bytes(&mut self, bytes: &[u8]) {
-        self.vt_parser.process(bytes);
-    }
-
-    /// Resize the embedded terminal screen. Call when the claude-pane area
-    /// changes due to a window resize.
-    pub fn resize_pty_screen(&mut self, rows: u16, cols: u16) {
-        self.vt_parser.screen_mut().set_size(rows, cols);
     }
 
     pub fn toggle_focus(&mut self) {

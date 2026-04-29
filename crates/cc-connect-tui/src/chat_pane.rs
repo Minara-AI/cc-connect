@@ -1,4 +1,5 @@
-//! Left pane: chat scrollback + a one-line input box at the bottom.
+//! Right pane (in the new claude-left layout): chat scrollback + a one-line
+//! input box at the bottom. Operates on the currently-active [`RoomTab`].
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,11 +8,11 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, ChatLineKind, Focus};
+use crate::app::ChatLineKind;
+use crate::tabs::RoomTab;
 use crate::theme;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Chat;
+pub fn render(frame: &mut Frame, area: Rect, tab: &RoomTab, focused: bool) {
     let border_style = if focused {
         theme::border_focused()
     } else {
@@ -22,20 +23,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_type(theme::BORDER_TYPE)
         .border_style(border_style)
-        .title(Span::styled(" 💬 chat ", theme::pane_title()));
+        .title(Span::styled(
+            format!(" 💬 chat · {} ", tab.topic_short()),
+            theme::pane_title(),
+        ));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    // Split inner: scrollback above, input row at the bottom.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    // ---- Scrollback ---------------------------------------------------------
-    // Tail-N: render the last `chunks[0].height` rendered lines. Wrap is on
-    // so longer messages (e.g. the ticket) span multiple rows.
-    let lines: Vec<Line> = app
+    let lines: Vec<Line> = tab
         .chat_lines
         .iter()
         .map(|cl| match cl.kind {
@@ -51,26 +51,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let scrollback = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(scrollback, chunks[0]);
 
-    // ---- Input row ----------------------------------------------------------
     let prompt = if focused { "› " } else { "  " };
     let input = Paragraph::new(Line::from(vec![
         Span::styled(prompt, theme::input_prompt(focused)),
-        Span::styled(app.input_buf.as_str(), theme::input_text()),
+        Span::styled(tab.input_buf.as_str(), theme::input_text()),
     ]));
     frame.render_widget(input, chunks[1]);
 }
 
 /// "[<nick>] <body>" → distinct nick / body styles. When `mention` is true,
-/// the body is rendered in a brighter mention colour and the leading "(@me)"
-/// (already in the text from event_loop) keeps its bold mention style.
+/// the body is rendered in a brighter mention colour.
 fn render_incoming(text: &str, mention: bool) -> Line<'static> {
     let (nick_style, body_style) = if mention {
         (theme::chat_mention_nick(), theme::chat_mention_body())
     } else {
         (theme::chat_incoming_nick(), theme::chat_incoming_body())
     };
-    // Strip the `(@me) ` prefix added in event_loop, render it as its own
-    // bright span so it pops on the left margin.
     let (mention_marker, rest_text) = if let Some(rest) = text.strip_prefix("(@me) ") {
         ("(@me) ", rest)
     } else {

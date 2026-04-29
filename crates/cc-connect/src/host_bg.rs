@@ -141,13 +141,26 @@ pub fn run_start(relay: Option<&str>) -> Result<()> {
 
 // ---------- `cc-connect host-bg list` ----------------------------------------
 
-pub fn run_list() -> Result<()> {
+/// Snapshot of one running host-bg daemon, for inproc consumers (the TUI's
+/// rooms overlay, primarily) that want the same info `host-bg list`
+/// prints but as data instead of stdout.
+#[derive(Debug, Clone)]
+pub struct HostInfo {
+    pub topic_hex: String,
+    pub pid: u32,
+    pub ticket: String,
+    pub started_at: i64,
+    pub relay: Option<String>,
+}
+
+/// List the live host-bg daemons. Sweeps stale `~/.cc-connect/hosts/*.pid`
+/// files (process gone or malformed) as a side effect.
+pub fn list_running() -> Result<Vec<HostInfo>> {
     let dir = hosts_dir();
     if !dir.exists() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let now = now_ms();
-    let mut printed = 0;
+    let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir).with_context(|| format!("readdir {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
@@ -156,13 +169,12 @@ pub fn run_list() -> Result<()> {
             .and_then(|n| n.to_str())
             .and_then(|n| n.strip_suffix(".pid"))
         {
-            Some(s) => s,
+            Some(s) => s.to_string(),
             None => continue,
         };
         let pf = match read_pid_file(&path) {
             Ok(p) => p,
             Err(_) => {
-                // Malformed — sweep.
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
@@ -171,18 +183,33 @@ pub fn run_list() -> Result<()> {
             let _ = std::fs::remove_file(&path);
             continue;
         }
-        let uptime = (now - pf.started_at).max(0);
+        out.push(HostInfo {
+            topic_hex,
+            pid: pf.pid,
+            ticket: pf.ticket,
+            started_at: pf.started_at,
+            relay: pf.relay,
+        });
+    }
+    Ok(out)
+}
+
+pub fn run_list() -> Result<()> {
+    let hosts = list_running()?;
+    if hosts.is_empty() {
+        println!("(no daemons running)");
+        return Ok(());
+    }
+    let now = now_ms();
+    for h in hosts {
+        let uptime = (now - h.started_at).max(0);
         println!(
             "{topic} pid={pid} uptime={up}s relay={relay}",
-            topic = &topic_hex[..12.min(topic_hex.len())],
-            pid = pf.pid,
+            topic = &h.topic_hex[..12.min(h.topic_hex.len())],
+            pid = h.pid,
             up = uptime / 1000,
-            relay = pf.relay.as_deref().unwrap_or("(default)"),
+            relay = h.relay.as_deref().unwrap_or("(default)"),
         );
-        printed += 1;
-    }
-    if printed == 0 {
-        println!("(no daemons running)");
     }
     Ok(())
 }

@@ -1,4 +1,6 @@
-//! Right pane: the embedded `claude` PTY rendered through tui-term.
+//! Left pane (in the claude-left/chat-right layout): the embedded `claude`
+//! PTY for the active [`RoomTab`], rendered through tui-term over the
+//! tab's vt100 screen.
 
 use ratatui::{
     layout::Rect,
@@ -8,11 +10,10 @@ use ratatui::{
 };
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{App, Focus};
+use crate::tabs::RoomTab;
 use crate::theme;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Claude;
+pub fn render(frame: &mut Frame, area: Rect, tab: &RoomTab, focused: bool) {
     let border_style = if focused {
         theme::border_focused()
     } else {
@@ -22,8 +23,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_type(theme::BORDER_TYPE)
         .border_style(border_style)
-        .title(Span::styled(" 🤖 claude ", theme::pane_title()));
-    let screen = app.vt_parser.screen();
-    let widget = PseudoTerminal::new(screen).block(block);
+        .title(Span::styled(
+            format!(" 🤖 claude · {} ", tab.topic_short()),
+            theme::pane_title(),
+        ));
+    let widget = PseudoTerminal::new(tab.vt_parser.screen()).block(block);
     frame.render_widget(widget, area);
 }

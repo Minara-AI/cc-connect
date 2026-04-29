@@ -1,12 +1,19 @@
-//! Main async event loop: drives the TUI's redraw, dispatches keys, and
-//! pumps bytes between the chat session and the embedded `claude` PTY.
+//! Main TUI event loop: multiplexes input + output across tabs.
+//!
+//! Architecture:
+//!   - One [`crate::tabs::RoomTab`] per joined room. Each tab spawns a
+//!     forwarder task that fans-in its `chat_session` display lines and
+//!     PTY bytes onto two shared mpsc channels keyed by `TabId`.
+//!   - The event loop `tokio::select!`s over: crossterm events, the
+//!     fan-in display channel, the fan-in PTY channel, a periodic tick.
+//!   - Render path picks the active tab and draws its panes; idle tabs
+//!     keep accumulating state in the background.
 
-use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use cc_connect::chat_session::{self, ChatHandle, ChatSessionConfig, DisplayLine};
+use cc_connect::chat_session::DisplayLine;
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event as CtEvent, EventStream, KeyCode,
@@ -18,32 +25,32 @@ use crossterm::{
     },
 };
 use futures_lite::StreamExt;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::PtySize;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
+use std::io::Write as _;
 use tokio::sync::mpsc;
 
-use crate::app::{App, ChatLineKind, Focus};
+use crate::app::{App, ChatLine, ChatLineKind, Focus, Overlay};
+use crate::tabs::{spawn_tab, DisplayEvent, PtyChunk, SpawnTabArgs, TabId, TabIo};
 use crate::{chat_pane, claude_pane, theme};
 
-/// Caller-supplied configuration for [`run`].
+/// Caller-supplied configuration for the initial tab.
 pub struct RunOpts {
-    /// `cc1-…` ticket the chat session joins.
     pub ticket: String,
-    /// 64-char hex topic id from the ticket. Set as `CC_CONNECT_ROOM` on
-    /// the spawned `claude` so the hook scopes to this room only.
     pub topic_hex: String,
     pub no_relay: bool,
     pub relay: Option<String>,
-    /// Argv for the embedded child. Default is `["claude"]`.
     pub claude_argv: Vec<String>,
-    /// Cwd of the spawned `claude`. None → inherit.
     pub claude_cwd: Option<PathBuf>,
+    /// True if the caller spawned a host-bg daemon for this room (so the
+    /// tab gets a `hosting=true` flag, which affects close-tab semantics).
+    pub hosting: bool,
 }
 
 pub async fn run(opts: RunOpts) -> Result<()> {
@@ -53,240 +60,254 @@ pub async fn run(opts: RunOpts) -> Result<()> {
         ));
     }
 
-    // ---- 1. Boot the chat session ------------------------------------------
-    let cfg = ChatSessionConfig {
-        ticket: opts.ticket.clone(),
-        no_relay: opts.no_relay,
-        relay: opts.relay.clone(),
+    // ---- Fan-in channels --------------------------------------------------
+    let (display_tx, mut display_rx) = mpsc::channel::<DisplayEvent>(256);
+    let (pty_tx, mut pty_rx) = mpsc::channel::<PtyChunk>(256);
+    let tab_io = TabIo {
+        display_tx: display_tx.clone(),
+        pty_tx: pty_tx.clone(),
     };
-    let chat_handle = chat_session::spawn(cfg)
-        .await
-        .context("spawn chat_session")?;
 
-    // ---- 2. Spawn `claude` over a PTY --------------------------------------
-    // Use a sane initial size; we resize on the first crossterm Resize event.
-    let pty_system = native_pty_system();
-    let initial_size = current_terminal_size()?;
-    let claude_pane_size = pane_size_for(initial_size, /* split = right pane */);
-    let pair = pty_system
-        .openpty(claude_pane_size)
-        .map_err(|e| anyhow!("openpty: {e}"))?;
+    // ---- App state --------------------------------------------------------
+    let self_nick = std::fs::read_to_string(home_dir().join(".cc-connect").join("config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("self_nick")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+        })
+        .filter(|s| !s.is_empty());
+    let mut app = App::new(self_nick.clone());
 
-    let mut cmd = CommandBuilder::new(&opts.claude_argv[0]);
-    for arg in opts.claude_argv.iter().skip(1) {
-        cmd.arg(arg);
-    }
-    cmd.env("CC_CONNECT_ROOM", &opts.topic_hex);
-    if let Some(cwd) = &opts.claude_cwd {
-        cmd.cwd(cwd);
-    }
-    let mut pty_child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| anyhow!("spawn claude in PTY: {e}"))?;
+    // ---- Initial tab ------------------------------------------------------
+    let initial_pty_size = pane_size_for(current_terminal_size()?);
+    let initial_id = app.tabs.alloc_id();
+    let initial_tab = spawn_tab(
+        initial_id,
+        SpawnTabArgs {
+            ticket: opts.ticket.clone(),
+            no_relay: opts.no_relay,
+            relay: opts.relay.clone(),
+            claude_argv: opts.claude_argv.clone(),
+            claude_cwd: opts.claude_cwd.clone(),
+            initial_pty_size,
+            hosting: opts.hosting,
+        },
+        &tab_io,
+    )
+    .await
+    .context("spawn initial tab")?;
+    let banner_topic = initial_tab.topic_short();
+    let banner_ticket = initial_tab.ticket.clone();
+    app.tabs.add(initial_tab);
+    push_chat_to_active(
+        &mut app,
+        ChatLine {
+            kind: ChatLineKind::System,
+            text: format!(
+                "Room {} — Ctrl-N new tab, Ctrl-W close tab, F2 switch pane, Ctrl-Q quit",
+                banner_topic
+            ),
+        },
+    );
+    push_chat_to_active(
+        &mut app,
+        ChatLine {
+            kind: ChatLineKind::System,
+            text: "Share this ticket to invite peers:".to_string(),
+        },
+    );
+    push_chat_to_active(
+        &mut app,
+        ChatLine {
+            kind: ChatLineKind::Marker,
+            text: banner_ticket,
+        },
+    );
 
-    // Move the master end out so we can read/write asynchronously, and drop
-    // the slave handle (the child has it).
-    let pty_master = pair.master;
-    let mut pty_writer = pty_master
-        .take_writer()
-        .map_err(|e| anyhow!("pty take_writer: {e}"))?;
-    let mut pty_reader = pty_master
-        .try_clone_reader()
-        .map_err(|e| anyhow!("pty try_clone_reader: {e}"))?;
-
-    // Pump PTY → mpsc on a blocking thread.
-    let (pty_tx, mut pty_rx) = mpsc::channel::<Vec<u8>>(64);
-    tokio::task::spawn_blocking(move || pty_reader_loop(&mut *pty_reader, pty_tx));
-
-    // ---- 3. Initialise the terminal + App ----------------------------------
+    // ---- Terminal init ----------------------------------------------------
     let _term_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend).context("init terminal")?;
-    let (init_rows, init_cols) = (claude_pane_size.rows, claude_pane_size.cols);
 
-    let mut app = App::new(&opts.topic_hex, &opts.ticket, init_rows, init_cols);
-    app.push_chat(
-        ChatLineKind::System,
-        format!("Room {} — Tab switches pane, Ctrl-Q quits, Ctrl-Y reprints ticket", &app.topic_short),
-    );
-    // Print the full ticket so the user can share it. ~250 chars, will wrap.
-    app.push_chat(ChatLineKind::System, "Share this ticket to invite peers:".to_string());
-    app.push_chat(ChatLineKind::Marker, opts.ticket.clone());
-
-    // ---- 4. Run the loop ---------------------------------------------------
+    // ---- Main loop --------------------------------------------------------
     let mut crossterm_events = EventStream::new();
-    let mut chat_handle = chat_handle;
-    let mut redraw = true;
+    let claude_argv = opts.claude_argv.clone();
+    let claude_cwd = opts.claude_cwd.clone();
 
     loop {
-        if redraw {
-            terminal
-                .draw(|f| draw(f, &app))
-                .context("terminal draw")?;
-            redraw = false;
-        }
-        if app.should_exit {
+        terminal.draw(|f| draw(f, &app)).context("draw")?;
+        if app.should_exit || app.tabs.is_empty() {
             break;
         }
 
         tokio::select! {
-            // ---- Crossterm: keyboard / resize ------------------------------
-            ev = crossterm_events.next() => {
-                match ev {
-                    Some(Ok(CtEvent::Key(key))) => {
-                        if key.kind == KeyEventKind::Press {
-                            handle_key(&mut app, key, &mut chat_handle, &mut *pty_writer, &pty_master).await;
-                            redraw = true;
-                        }
-                    }
-                    Some(Ok(CtEvent::Resize(cols, rows))) => {
-                        let claude_size = pane_size_for(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-                        let _ = pty_master.resize(claude_size);
-                        app.resize_pty_screen(claude_size.rows, claude_size.cols);
-                        redraw = true;
-                    }
-                    Some(Err(_)) | None => break,
-                    _ => {}
+            ev = crossterm_events.next() => match ev {
+                Some(Ok(CtEvent::Key(key))) if key.kind == KeyEventKind::Press => {
+                    handle_key(&mut app, key, &tab_io, &claude_argv, &claude_cwd, opts.no_relay).await;
                 }
-            }
-
-            // ---- chat_session display lines --------------------------------
-            line = chat_handle.display_rx.recv() => {
-                match line {
-                    Some(DisplayLine::System(s)) => app.push_chat(ChatLineKind::System, s),
-                    Some(DisplayLine::Marker(s)) => app.push_chat(ChatLineKind::Marker, s),
-                    Some(DisplayLine::Incoming { nick_short, body, mentions_me }) => {
-                        let kind = if mentions_me {
-                            ChatLineKind::IncomingMention
-                        } else {
-                            ChatLineKind::Incoming
-                        };
-                        let prefix = if mentions_me { "(@me) " } else { "" };
-                        app.push_chat(kind, format!("{prefix}[{nick_short}] {body}"));
-                    }
-                    Some(DisplayLine::Echo(s)) => app.push_chat(ChatLineKind::Echo, s),
-                    Some(DisplayLine::Warn(s)) => app.push_chat(ChatLineKind::Warn, s),
-                    None => {
-                        app.push_chat(ChatLineKind::Warn, "[chat] session closed");
-                        // Don't exit — let user inspect the scrollback. They Ctrl-Q out.
+                Some(Ok(CtEvent::Resize(cols, rows))) => {
+                    let claude_size = pane_size_for(PtySize {
+                        rows, cols, pixel_width: 0, pixel_height: 0,
+                    });
+                    for tab in app.tabs.tabs.values_mut() {
+                        let _ = tab.pty_master.resize(claude_size);
+                        tab.vt_parser.screen_mut().set_size(claude_size.rows, claude_size.cols);
                     }
                 }
-                redraw = true;
-            }
-
-            // ---- PTY → vt100 -----------------------------------------------
-            chunk = pty_rx.recv() => {
-                match chunk {
-                    Some(bytes) => {
-                        app.feed_pty_bytes(&bytes);
-                        redraw = true;
-                    }
-                    None => {
-                        app.push_chat(ChatLineKind::Warn, "[claude] pane closed (child exited)");
+                Some(Err(_)) | None => break,
+                _ => {}
+            },
+            ev = display_rx.recv() => match ev {
+                Some((tid, line)) => {
+                    apply_display_line(&mut app, tid, line);
+                }
+                None => break,
+            },
+            ev = pty_rx.recv() => match ev {
+                Some((tid, bytes)) => {
+                    if let Some(t) = app.tabs.get_mut(tid) {
+                        t.vt_parser.process(&bytes);
                     }
                 }
-            }
-
-            // Periodic tick — covers the case where vt100 cursor blink etc.
-            // would otherwise be invisible. Cheap.
+                None => break,
+            },
             _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                redraw = true;
+                // periodic redraw (cursor blink, etc.)
             }
         }
     }
 
-    // Cleanup: kill the claude child if it's still around. The chat session
-    // shuts down when chat_handle's input_tx drops at the end of this scope.
-    let _ = pty_child.kill();
-    let _ = pty_child.wait();
+    // Cleanup. RoomTab::Drop kills claude + aborts forwarders + drops chat handle.
     Ok(())
 }
 
-// ---- Drawing ---------------------------------------------------------------
+// ---------- helpers ---------------------------------------------------------
 
-fn draw(f: &mut Frame, app: &App) {
-    let area = f.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),  // header
-            Constraint::Min(1),     // panes
-        ])
-        .split(area);
-    draw_header(f, chunks[0], app);
-
-    // claude on the left (wide, code-friendly), chat on the right (narrow).
-    let panes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(chunks[1]);
-    claude_pane::render(f, panes[0], app);
-    chat_pane::render(f, panes[1], app);
+fn push_chat_to_active(app: &mut App, line: ChatLine) {
+    if let Some(t) = app.tabs.active_tab_mut() {
+        t.push_chat(line);
+    }
 }
 
-fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let label = format!(" cc-connect · room {} ", app.topic_short);
-    let hint = " [F2 / Tab] switch pane   [Ctrl-Y] copy ticket   [Ctrl-Q] quit ";
-    let line = Line::from(vec![
-        Span::styled(label, theme::header_chip()),
-        Span::styled(hint, theme::header_hint()),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+fn apply_display_line(app: &mut App, tid: TabId, line: DisplayLine) {
+    let line = match line {
+        DisplayLine::System(s) => ChatLine {
+            kind: ChatLineKind::System,
+            text: s,
+        },
+        DisplayLine::Marker(s) => ChatLine {
+            kind: ChatLineKind::Marker,
+            text: s,
+        },
+        DisplayLine::Incoming { nick_short, body, mentions_me } => {
+            let kind = if mentions_me {
+                ChatLineKind::IncomingMention
+            } else {
+                ChatLineKind::Incoming
+            };
+            let prefix = if mentions_me { "(@me) " } else { "" };
+            ChatLine {
+                kind,
+                text: format!("{prefix}[{nick_short}] {body}"),
+            }
+        }
+        DisplayLine::Echo(s) => ChatLine {
+            kind: ChatLineKind::Echo,
+            text: s,
+        },
+        DisplayLine::Warn(s) => ChatLine {
+            kind: ChatLineKind::Warn,
+            text: s,
+        },
+    };
+    if let Some(t) = app.tabs.get_mut(tid) {
+        t.push_chat(line);
+    }
 }
 
-// ---- Key dispatch ----------------------------------------------------------
+// ---------- key dispatch ----------------------------------------------------
 
 async fn handle_key(
     app: &mut App,
     key: KeyEvent,
-    chat: &mut ChatHandle,
-    pty_writer: &mut dyn Write,
-    pty_master: &Box<dyn MasterPty + Send>,
+    tab_io: &TabIo,
+    claude_argv: &[String],
+    claude_cwd: &Option<PathBuf>,
+    no_relay: bool,
 ) {
-    let _ = pty_master; // silence unused-arg warn — kept for symmetry / future use
-    // Global hotkeys, regardless of focus.
+    // Overlay key dispatch takes precedence.
+    if app.overlay.is_some() {
+        handle_overlay_key(app, key, tab_io, claude_argv, claude_cwd, no_relay).await;
+        return;
+    }
+
+    // Global hotkeys (regardless of focus).
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('q') => {
                 app.should_exit = true;
                 return;
             }
-            KeyCode::Char('y') => {
-                // Copy the ticket to the system clipboard. Fall back to
-                // re-printing it in scrollback if the clipboard is unreachable
-                // (headless Linux, locked-down macOS sandbox, etc.).
-                match arboard::Clipboard::new()
-                    .and_then(|mut c| c.set_text(app.ticket.clone()))
-                {
-                    Ok(()) => {
-                        app.push_chat(
-                            ChatLineKind::System,
-                            "✓ ticket copied to clipboard".to_string(),
-                        );
-                    }
-                    Err(e) => {
-                        app.push_chat(
-                            ChatLineKind::Warn,
-                            format!("clipboard unreachable ({e}); reprinting ticket below"),
-                        );
-                        let ticket = app.ticket.clone();
-                        app.push_chat(ChatLineKind::Marker, ticket);
-                    }
-                }
+            KeyCode::Char('n') => {
+                app.overlay = Some(Overlay::NewRoomPicker);
                 return;
             }
-            KeyCode::Char('c') if app.focus == Focus::Chat => {
-                // Ctrl-C in chat pane = quit (mirrors `cc-connect chat` REPL).
-                app.should_exit = true;
+            KeyCode::Char('w') => {
+                close_active_tab(app);
+                return;
+            }
+            KeyCode::Char('y') => {
+                let ticket = app
+                    .tabs
+                    .active_tab()
+                    .map(|t| t.ticket.clone())
+                    .unwrap_or_default();
+                if !ticket.is_empty() {
+                    match arboard::Clipboard::new().and_then(|mut c| c.set_text(ticket.clone())) {
+                        Ok(()) => push_chat_to_active(
+                            app,
+                            ChatLine {
+                                kind: ChatLineKind::System,
+                                text: "✓ ticket copied to clipboard".to_string(),
+                            },
+                        ),
+                        Err(e) => {
+                            push_chat_to_active(
+                                app,
+                                ChatLine {
+                                    kind: ChatLineKind::Warn,
+                                    text: format!("clipboard unreachable ({e}); reprinting below"),
+                                },
+                            );
+                            push_chat_to_active(
+                                app,
+                                ChatLine {
+                                    kind: ChatLineKind::Marker,
+                                    text: ticket,
+                                },
+                            );
+                        }
+                    }
+                }
                 return;
             }
             _ => {}
         }
     }
-    // F2 is the global "switch focus" key — works from BOTH panes, doesn't
-    // collide with anything Claude Code uses. Tab from chat is a one-way
-    // convenience (Tab inside Claude is autocomplete; we forward it).
+
+    // Numeric tab switch (1-9) + page-up/down for cycling.
+    if key.modifiers.is_empty() {
+        if let KeyCode::Char(c) = key.code {
+            if let Some(d) = c.to_digit(10) {
+                if d >= 1 && d <= 9 && app.focus != Focus::Claude {
+                    app.tabs.switch_to_index((d - 1) as usize);
+                    return;
+                }
+            }
+        }
+    }
     if key.code == KeyCode::F(2) {
         app.toggle_focus();
         return;
@@ -296,61 +317,298 @@ async fn handle_key(
         return;
     }
     if key.code == KeyCode::BackTab {
-        // Shift-Tab from anywhere swaps focus too.
         app.toggle_focus();
         return;
     }
 
     match app.focus {
-        Focus::Chat => handle_chat_key(app, key, chat).await,
-        Focus::Claude => handle_claude_key(key, pty_writer),
+        Focus::Chat => handle_chat_key(app, key).await,
+        Focus::Claude => handle_claude_key(app, key).await,
     }
 }
 
-async fn handle_chat_key(app: &mut App, key: KeyEvent, chat: &mut ChatHandle) {
+async fn handle_chat_key(app: &mut App, key: KeyEvent) {
+    let active_id = match app.tabs.active {
+        Some(id) => id,
+        None => return,
+    };
+    let tab = match app.tabs.get_mut(active_id) {
+        Some(t) => t,
+        None => return,
+    };
     match key.code {
         KeyCode::Enter => {
-            if !app.input_buf.is_empty() {
-                let line = std::mem::take(&mut app.input_buf);
-                let _ = chat.input_tx.send(line).await;
+            if !tab.input_buf.is_empty() {
+                let line = std::mem::take(&mut tab.input_buf);
+                let _ = tab.chat_handle.input_tx.send(line).await;
             }
         }
         KeyCode::Backspace => {
-            app.input_buf.pop();
+            tab.input_buf.pop();
         }
         KeyCode::Char(c) => {
-            // Filter Ctrl-modified printables — they're hotkeys, not input.
             if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                app.input_buf.push(c);
+                tab.input_buf.push(c);
             }
         }
         _ => {}
     }
 }
 
-fn handle_claude_key(key: KeyEvent, pty_writer: &mut dyn Write) {
+async fn handle_claude_key(app: &mut App, key: KeyEvent) {
+    let active_id = match app.tabs.active {
+        Some(id) => id,
+        None => return,
+    };
+    let tab = match app.tabs.get_mut(active_id) {
+        Some(t) => t,
+        None => return,
+    };
     let bytes = encode_key(key);
     if bytes.is_empty() {
         return;
     }
-    let _ = pty_writer.write_all(&bytes);
-    let _ = pty_writer.flush();
+    let _ = tab.pty_writer.write_all(&bytes);
+    let _ = tab.pty_writer.flush();
 }
 
-/// Translate a crossterm KeyEvent into the byte sequence a real terminal
-/// would send to its child. Covers the common cases — chars, Enter,
-/// Backspace, Tab, Esc, arrows. Modifiers handle Ctrl-letter encodings.
+async fn handle_overlay_key(
+    app: &mut App,
+    key: KeyEvent,
+    tab_io: &TabIo,
+    claude_argv: &[String],
+    claude_cwd: &Option<PathBuf>,
+    no_relay: bool,
+) {
+    let overlay = app.overlay.take();
+    let mut next: Option<Overlay> = None;
+    match overlay {
+        Some(Overlay::NewRoomPicker) => match key.code {
+            KeyCode::Char('j') | KeyCode::Char('J') => {
+                next = Some(Overlay::JoinTicketPrompt { buf: String::new() });
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {}
+            _ => {
+                next = Some(Overlay::NewRoomPicker);
+            }
+        },
+        Some(Overlay::JoinTicketPrompt { mut buf }) => match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => {
+                let ticket = buf.trim().to_string();
+                if !ticket.is_empty() {
+                    let id = app.tabs.alloc_id();
+                    let initial_pty_size = pane_size_for(current_terminal_size().unwrap_or(PtySize {
+                        rows: 30, cols: 120, pixel_width: 0, pixel_height: 0,
+                    }));
+                    let args = SpawnTabArgs {
+                        ticket,
+                        no_relay,
+                        relay: None,
+                        claude_argv: claude_argv.to_vec(),
+                        claude_cwd: claude_cwd.clone(),
+                        initial_pty_size,
+                        hosting: false,
+                    };
+                    match spawn_tab(id, args, tab_io).await {
+                        Ok(tab) => {
+                            let topic = tab.topic_short();
+                            let ticket = tab.ticket.clone();
+                            app.tabs.add(tab);
+                            push_chat_to_active(app, ChatLine {
+                                kind: ChatLineKind::System,
+                                text: format!("Joined room {topic}"),
+                            });
+                            push_chat_to_active(app, ChatLine {
+                                kind: ChatLineKind::Marker,
+                                text: ticket,
+                            });
+                        }
+                        Err(e) => {
+                            next = Some(Overlay::Notice(format!("join failed: {e:#}")));
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+                next = Some(Overlay::JoinTicketPrompt { buf });
+            }
+            KeyCode::Char(c) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    buf.push(c);
+                }
+                next = Some(Overlay::JoinTicketPrompt { buf });
+            }
+            _ => {
+                next = Some(Overlay::JoinTicketPrompt { buf });
+            }
+        },
+        Some(Overlay::ConfirmCloseHost { topic_hex }) => match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Err(e) = cc_connect::host_bg::run_stop(&topic_hex) {
+                    next = Some(Overlay::Notice(format!("stop daemon failed: {e:#}")));
+                }
+                drop_active_tab(app);
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => {
+                drop_active_tab(app);
+            }
+            _ => {
+                next = Some(Overlay::ConfirmCloseHost { topic_hex });
+            }
+        },
+        Some(Overlay::Notice(s)) => match key.code {
+            KeyCode::Esc | KeyCode::Enter => {}
+            _ => next = Some(Overlay::Notice(s)),
+        },
+        None => {}
+    }
+    app.overlay = next;
+}
+
+fn close_active_tab(app: &mut App) {
+    let (hosting, topic_hex) = match app.tabs.active_tab() {
+        Some(t) => (t.hosting, t.topic_hex.clone()),
+        None => return,
+    };
+    if hosting {
+        app.overlay = Some(Overlay::ConfirmCloseHost { topic_hex });
+    } else {
+        drop_active_tab(app);
+    }
+}
+
+fn drop_active_tab(app: &mut App) {
+    if let Some(id) = app.tabs.active {
+        app.tabs.remove(id);
+    }
+}
+
+// ---------- rendering -------------------------------------------------------
+
+fn draw(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Length(1), // tab strip
+            Constraint::Min(1),    // panes
+        ])
+        .split(area);
+    draw_header(f, chunks[0], app);
+    draw_tab_strip(f, chunks[1], app);
+    if let Some(active) = app.tabs.active_tab() {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(chunks[2]);
+        claude_pane::render(f, panes[0], active, app.focus == Focus::Claude);
+        chat_pane::render(f, panes[1], active, app.focus == Focus::Chat);
+    } else {
+        let placeholder = Paragraph::new("No active tabs. Ctrl-N to open one, Ctrl-Q to quit.");
+        f.render_widget(placeholder, chunks[2]);
+    }
+    draw_overlay(f, app);
+}
+
+fn draw_header(f: &mut Frame, area: Rect, _app: &App) {
+    let label = " cc-connect ";
+    let hint = " [1-9] tab  [Ctrl-N] new  [Ctrl-W] close  [F2/Tab] switch pane  [Ctrl-Y] copy ticket  [Ctrl-Q] quit ";
+    let line = Line::from(vec![
+        Span::styled(label, theme::header_chip()),
+        Span::styled(hint, theme::header_hint()),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_tab_strip(f: &mut Frame, area: Rect, app: &App) {
+    if app.tabs.is_empty() {
+        f.render_widget(Paragraph::new(""), area);
+        return;
+    }
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, &id) in app.tabs.order.iter().enumerate() {
+        let tab = match app.tabs.tabs.get(&id) {
+            Some(t) => t,
+            None => continue,
+        };
+        let active = app.tabs.active == Some(id);
+        let label = format!(" [{n}] {short}{tag} ", n = i + 1, short = tab.topic_short(), tag = if tab.hosting { "·H" } else { "" });
+        let style = if active {
+            theme::tab_active()
+        } else {
+            theme::tab_inactive()
+        };
+        spans.push(Span::styled(label, style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn draw_overlay(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let Some(overlay) = &app.overlay else {
+        return;
+    };
+    let (title, body, h) = match overlay {
+        Overlay::NewRoomPicker => (
+            " new room ",
+            "[j] join existing room (paste ticket)\n[Esc] cancel".to_string(),
+            5,
+        ),
+        Overlay::JoinTicketPrompt { buf } => (
+            " join room ",
+            format!("Paste ticket and press Enter:\n\n› {buf}"),
+            6,
+        ),
+        Overlay::ConfirmCloseHost { topic_hex } => (
+            " close tab ",
+            format!(
+                "You're hosting {}. Stop the host daemon too?\n  [y] yes — close tab + stop daemon\n  [n] no — close tab, daemon stays (default)",
+                &topic_hex[..12.min(topic_hex.len())]
+            ),
+            6,
+        ),
+        Overlay::Notice(s) => (" notice ", format!("{s}\n\n[Esc] dismiss"), 6),
+    };
+    let popup = centered_rect(70, h, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(theme::BORDER_TYPE)
+        .border_style(theme::border_focused())
+        .title(Span::styled(title, theme::pane_title()));
+    let inner = block.inner(popup);
+    f.render_widget(Clear, popup);
+    f.render_widget(block, popup);
+    f.render_widget(Paragraph::new(body).style(theme::input_text()), inner);
+}
+
+fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let width = area.width.saturating_mul(percent_x) / 100;
+    let h = height.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height: h,
+    }
+}
+
+// ---------- key encoding (unchanged from the v0.3 single-tab path) ----------
+
 fn encode_key(key: KeyEvent) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let mut buf = Vec::with_capacity(8);
     if alt {
-        buf.push(0x1b); // ESC prefix for Alt-X.
+        buf.push(0x1b);
     }
     match key.code {
         KeyCode::Char(c) => {
             if ctrl {
-                // Ctrl-A..Ctrl-Z → 0x01..0x1A.
                 let lower = c.to_ascii_lowercase();
                 if ('a'..='z').contains(&lower) {
                     buf.push((lower as u8) - b'a' + 1);
@@ -383,22 +641,7 @@ fn encode_key(key: KeyEvent) -> Vec<u8> {
     buf
 }
 
-// ---- PTY plumbing ----------------------------------------------------------
-
-fn pty_reader_loop(reader: &mut dyn Read, tx: mpsc::Sender<Vec<u8>>) {
-    let mut buf = [0u8; 4096];
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if tx.blocking_send(buf[..n].to_vec()).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-}
+// ---------- terminal size + lifecycle helpers ------------------------------
 
 fn current_terminal_size() -> Result<PtySize> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 30));
@@ -410,13 +653,10 @@ fn current_terminal_size() -> Result<PtySize> {
     })
 }
 
-/// Compute the size for the right pane (claude). We allocate 60% of the
-/// width to it (matching the layout in `draw`), and the full inner height
-/// minus the header row + 2 borders.
 fn pane_size_for(full: PtySize) -> PtySize {
     let claude_cols = (full.cols as f32 * 0.60) as u16;
-    let claude_cols = claude_cols.saturating_sub(2); // borders
-    let claude_rows = full.rows.saturating_sub(3); // header + 2 borders
+    let claude_cols = claude_cols.saturating_sub(2);
+    let claude_rows = full.rows.saturating_sub(4); // header + tab-strip + 2 borders
     PtySize {
         cols: claude_cols.max(20),
         rows: claude_rows.max(5),
@@ -424,8 +664,6 @@ fn pane_size_for(full: PtySize) -> PtySize {
         pixel_height: 0,
     }
 }
-
-// ---- Terminal lifecycle ----------------------------------------------------
 
 struct TerminalGuard;
 
@@ -450,4 +688,10 @@ impl Drop for TerminalGuard {
 fn atty_check_stdout() -> bool {
     use std::io::IsTerminal;
     std::io::stdout().is_terminal()
+}
+
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
 }
