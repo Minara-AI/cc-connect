@@ -7,12 +7,19 @@ use anyhow::{anyhow, Context, Result};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-pub fn run_start(relay: Option<&str>, claude_args: &[String]) -> Result<()> {
+pub fn run_start(
+    relay: Option<&str>,
+    nick: Option<&str>,
+    claude_args: &[String],
+) -> Result<()> {
     let tui = locate_tui_bin()?;
     let mut cmd = Command::new(&tui);
     cmd.arg("start");
     if let Some(r) = relay {
         cmd.arg("--relay").arg(r);
+    }
+    if let Some(n) = nick {
+        cmd.arg("--nick").arg(n);
     }
     if !claude_args.is_empty() {
         cmd.arg("--");
@@ -22,12 +29,20 @@ pub fn run_start(relay: Option<&str>, claude_args: &[String]) -> Result<()> {
     Err(anyhow!("exec {} failed: {err}", tui.display()))
 }
 
-pub fn run_join(ticket: &str, relay: Option<&str>, claude_args: &[String]) -> Result<()> {
+pub fn run_join(
+    ticket: &str,
+    relay: Option<&str>,
+    nick: Option<&str>,
+    claude_args: &[String],
+) -> Result<()> {
     let tui = locate_tui_bin()?;
     let mut cmd = Command::new(&tui);
     cmd.arg("join").arg(ticket);
     if let Some(r) = relay {
         cmd.arg("--relay").arg(r);
+    }
+    if let Some(n) = nick {
+        cmd.arg("--nick").arg(n);
     }
     if !claude_args.is_empty() {
         cmd.arg("--");

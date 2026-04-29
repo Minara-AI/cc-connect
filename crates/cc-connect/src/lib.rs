@@ -90,6 +90,9 @@ pub enum RoomCmd {
     Start {
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
+        /// Override / set the saved display name. Persists.
+        #[arg(long, value_name = "NAME")]
+        nick: Option<String>,
         /// Args forwarded to `claude`. Use `--` to separate.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -99,6 +102,9 @@ pub enum RoomCmd {
         ticket: String,
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
+        /// Override / set the saved display name. Persists.
+        #[arg(long, value_name = "NAME")]
+        nick: Option<String>,
         /// Args forwarded to `claude`. Use `--` to separate.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -130,11 +136,11 @@ pub fn run(cli: Cli) -> Result<()> {
             chat::run(&ticket, no_relay, relay.as_deref())
         }
         Command::Room { cmd } => match cmd {
-            RoomCmd::Start { relay, claude_args } => {
-                room::run_start(relay.as_deref(), &claude_args)
+            RoomCmd::Start { relay, nick, claude_args } => {
+                room::run_start(relay.as_deref(), nick.as_deref(), &claude_args)
             }
-            RoomCmd::Join { ticket, relay, claude_args } => {
-                room::run_join(&ticket, relay.as_deref(), &claude_args)
+            RoomCmd::Join { ticket, relay, nick, claude_args } => {
+                room::run_join(&ticket, relay.as_deref(), nick.as_deref(), &claude_args)
             }
         },
         Command::HostBg { cmd } => match cmd {

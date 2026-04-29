@@ -30,6 +30,10 @@ enum Cmd {
     Start {
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
+        /// Override / set the saved display name. Persists to
+        /// `~/.cc-connect/config.json`. Use empty string to clear.
+        #[arg(long, value_name = "NAME")]
+        nick: Option<String>,
         /// Trailing args forwarded to `claude`. Use `--` to separate, e.g.
         /// `cc-connect-tui start -- --model opus --resume`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -40,6 +44,10 @@ enum Cmd {
         ticket: String,
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
+        /// Override / set the saved display name. Persists to
+        /// `~/.cc-connect/config.json`. Use empty string to clear.
+        #[arg(long, value_name = "NAME")]
+        nick: Option<String>,
         /// Trailing args forwarded to `claude`. Use `--` to separate.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -65,17 +73,17 @@ fn main() -> Result<()> {
 
     rt.block_on(async move {
         match cli.cmd {
-            Cmd::Start { relay, claude_args } => {
-                start(relay.as_deref(), claude_args).await
+            Cmd::Start { relay, nick, claude_args } => {
+                start(relay.as_deref(), nick.as_deref(), claude_args).await
             }
-            Cmd::Join { ticket, relay, claude_args } => {
-                join(&ticket, relay.as_deref(), claude_args).await
+            Cmd::Join { ticket, relay, nick, claude_args } => {
+                join(&ticket, relay.as_deref(), nick.as_deref(), claude_args).await
             }
         }
     })
 }
 
-async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
+async fn start(relay: Option<&str>, nick_override: Option<&str>, claude_args: Vec<String>) -> Result<()> {
     // First-run wizard: hook + nick + relay choice. Prompts use plain
     // stdin/stdout BEFORE the alt-screen takes over, so they look normal.
     if let Err(e) = setup::ensure_hook_installed() {
@@ -84,7 +92,7 @@ async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
     if let Err(e) = setup::ensure_mcp_installed() {
         eprintln!("(setup: mcp install failed: {e:#})");
     }
-    if let Err(e) = setup::ensure_self_nick() {
+    if let Err(e) = setup::ensure_self_nick(nick_override) {
         eprintln!("(setup: nick prompt failed: {e:#})");
     }
     let resolved_relay = setup::ensure_relay_choice(relay).unwrap_or_else(|e| {
@@ -135,14 +143,14 @@ async fn start(relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
     enter_tui(ticket, resolved_relay.as_deref(), claude_args, /* hosting */ true).await
 }
 
-async fn join(ticket: &str, relay: Option<&str>, claude_args: Vec<String>) -> Result<()> {
+async fn join(ticket: &str, relay: Option<&str>, nick_override: Option<&str>, claude_args: Vec<String>) -> Result<()> {
     if let Err(e) = setup::ensure_hook_installed() {
         eprintln!("(setup: hook check failed: {e:#})");
     }
     if let Err(e) = setup::ensure_mcp_installed() {
         eprintln!("(setup: mcp install failed: {e:#})");
     }
-    if let Err(e) = setup::ensure_self_nick() {
+    if let Err(e) = setup::ensure_self_nick(nick_override) {
         eprintln!("(setup: nick prompt failed: {e:#})");
     }
     enter_tui(ticket.to_string(), relay, claude_args, /* hosting */ false).await

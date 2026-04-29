@@ -325,15 +325,35 @@ fn install_hook(settings: &Path, hook_path: &Path) -> Result<()> {
 
 // ---- Self nickname --------------------------------------------------------
 
-/// Read `self_nick` from `~/.cc-connect/config.json`. If absent, prompt
-/// once and persist. Empty answer = the user wants no nick (we save an
-/// empty string so we don't ask again).
-pub fn ensure_self_nick() -> Result<Option<String>> {
+/// Resolve `self_nick`. Precedence:
+///  1. Explicit `override_nick` (e.g. `--nick alice`) — saved & used.
+///  2. Persisted `self_nick` in `~/.cc-connect/config.json` — used as-is.
+///     We print a one-line "running as <nick>" so the user can see who
+///     they are without having to remember.
+///  3. First-run prompt; the answer is persisted.
+///
+/// Empty answer = user wants no nick (saved as "" so we don't ask again).
+pub fn ensure_self_nick(override_nick: Option<&str>) -> Result<Option<String>> {
     let cfg_path = config_path();
     let mut cfg = read_config(&cfg_path).unwrap_or_default();
-    if cfg.self_nick.is_some() {
+
+    if let Some(raw) = override_nick {
+        let nick = sanitize_nick(raw)?;
+        cfg.self_nick = Some(nick.clone());
+        write_config(&cfg_path, &cfg)?;
+        let display = if nick.is_empty() { "(none)" } else { nick.as_str() };
+        println!("[setup] nickname set to {display} (saved)");
+        return Ok(if nick.is_empty() { None } else { Some(nick) });
+    }
+
+    if let Some(existing) = cfg.self_nick.clone() {
+        let display = if existing.is_empty() { "(none — pubkey prefix)" } else { existing.as_str() };
+        println!(
+            "[setup] running as {display}  (use `--nick <name>` to change, or edit ~/.cc-connect/config.json)"
+        );
         return Ok(cfg.self_nick.filter(|s| !s.is_empty()));
     }
+
     println!();
     println!("Pick a display name (other peers see this as your sender label).");
     println!("Leave blank to use a short pubkey prefix.");
@@ -341,6 +361,13 @@ pub fn ensure_self_nick() -> Result<Option<String>> {
         Ok(s) => s,
         Err(_) => String::new(),
     };
+    let nick = sanitize_nick(&raw)?;
+    cfg.self_nick = Some(nick.clone());
+    write_config(&cfg_path, &cfg)?;
+    Ok(if nick.is_empty() { None } else { Some(nick) })
+}
+
+fn sanitize_nick(raw: &str) -> Result<String> {
     let nick = raw.trim().to_string();
     if nick.len() > cc_connect_core::message::NICK_MAX_BYTES {
         bail!(
@@ -352,9 +379,7 @@ pub fn ensure_self_nick() -> Result<Option<String>> {
     if nick.chars().any(|c| c.is_control()) {
         bail!("nickname must not contain control characters");
     }
-    cfg.self_nick = Some(nick.clone());
-    write_config(&cfg_path, &cfg)?;
-    Ok(if nick.is_empty() { None } else { Some(nick) })
+    Ok(nick)
 }
 
 // ---- Relay config (start mode only) ----------------------------------------

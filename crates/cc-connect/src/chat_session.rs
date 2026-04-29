@@ -101,17 +101,26 @@ pub struct ChatHandle {
     pub join: tokio::task::JoinHandle<Result<()>>,
 }
 
+/// Where an outbound chat line came from. Used to pick the sender nick:
+/// the local user types as `self_nick`, MCP-driven Claude appears as
+/// `<self_nick>-cc` so peers can tell the AI apart from the human.
+#[derive(Copy, Clone, Debug)]
+enum InputSource {
+    Local,
+    Mcp,
+}
+
 /// Boot a chat session as a tokio task. The task does the iroh + gossip +
 /// blobs setup, the backfill RPC, the active-rooms PID file, then loops on
 /// the input channel until it closes.
 pub async fn spawn(cfg: ChatSessionConfig) -> Result<ChatHandle> {
     let (display_tx, display_rx) = mpsc::channel::<DisplayLine>(100);
     let (input_tx, input_rx) = mpsc::channel::<String>(32);
-    // Give run_session its own Sender clone so the IPC server (Claude
-    // Code's MCP tools) can forward commands through the same input
-    // pipeline as the keyboard.
-    let ipc_input_tx = input_tx.clone();
-    let join = tokio::spawn(run_session(cfg, display_tx, input_rx, ipc_input_tx));
+    // MCP (cc-connect-mcp via IPC) writes to its own channel so the send
+    // loop can tag those lines as InputSource::Mcp and rebrand the nick
+    // to `<self_nick>-cc`.
+    let (mcp_tx, mcp_rx) = mpsc::channel::<String>(32);
+    let join = tokio::spawn(run_session(cfg, display_tx, input_rx, mcp_tx, mcp_rx));
     Ok(ChatHandle {
         display_rx,
         input_tx,
@@ -123,7 +132,8 @@ async fn run_session(
     cfg: ChatSessionConfig,
     display_tx: mpsc::Sender<DisplayLine>,
     mut input_rx: mpsc::Receiver<String>,
-    ipc_input_tx: mpsc::Sender<String>,
+    mcp_input_tx: mpsc::Sender<String>,
+    mut mcp_input_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     // 1. Decode ticket → topic + bootstrap peers.
     let payload_bytes = decode_room_code(&cfg.ticket)
@@ -243,11 +253,11 @@ async fn run_session(
             &ipc_sock,
             std::fs::Permissions::from_mode(0o600),
         );
-        let ipc_input_tx = ipc_input_tx.clone();
+        let mcp_input_tx = mcp_input_tx.clone();
         let ipc_log_path = log_path.clone();
         let ipc_files_dir = files_dir_for(&topic_id_hex);
         Some(tokio::spawn(async move {
-            ipc_server_loop(listener, ipc_input_tx, ipc_log_path, ipc_files_dir).await
+            ipc_server_loop(listener, mcp_input_tx, ipc_log_path, ipc_files_dir).await
         }))
     } else {
         None
@@ -384,22 +394,45 @@ async fn run_session(
         }
     });
 
-    // 12. Send loop — pull from input_rx instead of stdin.
+    // 12. Send loop — merge user-typed input (input_rx) and MCP-driven
+    // input (mcp_input_rx). Each branch tags its source so we can rewrite
+    // the nick: locals send as `self_nick`, MCP sends as `<self_nick>-cc`.
     let result: Result<()> = loop {
-        let line = match input_rx.recv().await {
-            Some(l) => l,
-            None => break Ok(()), // caller dropped input_tx → clean shutdown
+        let (line, source) = tokio::select! {
+            biased;
+            l = input_rx.recv() => match l {
+                Some(s) => (s, InputSource::Local),
+                None => break Ok(()), // caller dropped input_tx → clean shutdown
+            },
+            l = mcp_input_rx.recv() => match l {
+                Some(s) => (s, InputSource::Mcp),
+                None => continue, // MCP server gone; the user channel still drives shutdown
+            },
         };
         let body = line.trim_end_matches(['\n', '\r']).to_string();
         if body.is_empty() {
             continue;
         }
 
+        // Effective nick for this send. Local = the user; Mcp = the user's
+        // embedded Claude (we suffix `-cc` so peers can tell them apart).
+        let base_nick: String = self_nick
+            .clone()
+            .unwrap_or_else(|| pubkey_string.chars().take(8).collect::<String>());
+        let echo_nick = match source {
+            InputSource::Local => base_nick.clone(),
+            InputSource::Mcp => format!("{base_nick}-cc"),
+        };
+        let nick_for_msg: Option<String> = match source {
+            InputSource::Local => self_nick.clone(),
+            InputSource::Mcp => Some(format!("{base_nick}-cc")),
+        };
+
         let msg = if let Some(path_str) = body.strip_prefix("/drop ") {
             match build_file_drop(&store, path_str.trim(), &pubkey_string, &topic_id_hex).await {
                 Ok(m) => {
                     let m = m
-                        .with_nick(self_nick.clone())
+                        .with_nick(nick_for_msg.clone())
                         .context("attach nick to file_drop")?;
                     let _ = display_tx
                         .send(DisplayLine::Echo(format!(
@@ -430,15 +463,12 @@ async fn run_session(
             // they sent (the listener filters out msg.author == our_pubkey to
             // avoid duplicate gossip echoes — that's the correct dedup, but it
             // also hides our own send, which is wrong UX).
-            let echo_nick = self_nick
-                .clone()
-                .unwrap_or_else(|| pubkey_string.chars().take(8).collect::<String>());
             let _ = display_tx
                 .send(DisplayLine::Echo(format!("[{echo_nick}] {body}")))
                 .await;
             Message::new(&new_ulid(), pubkey_string.clone(), now_ms(), body)
                 .context("build Message")?
-                .with_nick(self_nick.clone())
+                .with_nick(nick_for_msg.clone())
                 .context("attach nick to chat")?
         };
 
