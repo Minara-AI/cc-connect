@@ -205,6 +205,19 @@ fn ensure_chat_daemon(ticket: &str, no_relay: bool, relay: Option<&str>) -> Resu
 // ---- multiplexer detection + exec --------------------------------------
 
 fn detect_multiplexer() -> Multiplexer {
+    // Escape hatches: users who prefer the embedded TUI's familiar
+    // Ctrl-W/Ctrl-Q hotkeys (or who are on a remote box without
+    // zellij and find tmux's prefix-key UX too obscure) can opt out
+    // via CC_CONNECT_PREFER_TUI=1 to skip multiplexer detection
+    // entirely. CC_CONNECT_NO_MULTIPLEXER=1 is an alias.
+    for var in ["CC_CONNECT_PREFER_TUI", "CC_CONNECT_NO_MULTIPLEXER"] {
+        if std::env::var_os(var)
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+        {
+            return Multiplexer::None;
+        }
+    }
     if which("zellij").is_some() {
         return Multiplexer::Zellij;
     }

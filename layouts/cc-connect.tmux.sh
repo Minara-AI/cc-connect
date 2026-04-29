@@ -28,6 +28,31 @@ WINDOW="${CC_CONNECT_ROOM:0:12}"
 CLAUDE_LAUNCH="${CC_CONNECT_CLAUDE_LAUNCHER:-__CLAUDE_WRAPPER__}"
 CHAT_UI_BIN="${CC_CONNECT_CHAT_UI_BIN:-cc-chat-ui}"
 
+cat <<'TIPS'
+[room] tmux navigation:
+  Ctrl-b o      switch focus between claude (left) and chat-ui (right)
+  Ctrl-b ←/→    move focus by direction (or arrow keys)
+  Ctrl-b w      list windows (one per room) and pick one
+  Ctrl-b n / p  next / previous window
+  Ctrl-b z      zoom current pane (toggle full-screen)
+  Ctrl-b d      detach (room keeps running; reattach with `tmux a -t cc-connect`)
+  Ctrl-b &      kill current window (a single room)
+  Ctrl-b x      kill current pane
+
+  Prefer the old single-window TUI hotkeys instead? Quit zellij/tmux
+  and re-launch with CC_CONNECT_PREFER_TUI=1 cc-connect room start.
+TIPS
+
+apply_session_help() {
+  # Pin a one-line help string to the right side of the tmux status bar
+  # so the keybinds stay visible after attach. Session-scoped so it
+  # doesn't leak to the user's other tmux sessions.
+  tmux set-option -t "$SESSION" status-right-length 80 2>/dev/null || true
+  tmux set-option -t "$SESSION" status-right \
+    "#[fg=yellow]Ctrl-b o:pane Ctrl-b w:windows Ctrl-b d:detach #[default]" \
+    2>/dev/null || true
+}
+
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   # Existing session — add a new window for this room and switch focus to it.
   tmux new-window -t "$SESSION:" -n "$WINDOW" \
@@ -37,6 +62,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     -e "CC_CONNECT_ROOM=$CC_CONNECT_ROOM" \
     "$CHAT_UI_BIN --topic $CC_CONNECT_ROOM"
   tmux select-pane -t "$SESSION:$WINDOW.0"
+  apply_session_help
 
   # If we're already inside a tmux client (this script invoked from inside
   # the same session), select the new window. Otherwise attach.
@@ -54,5 +80,6 @@ else
     -e "CC_CONNECT_ROOM=$CC_CONNECT_ROOM" \
     "$CHAT_UI_BIN --topic $CC_CONNECT_ROOM"
   tmux select-pane -t "$SESSION:$WINDOW.0"
+  apply_session_help
   exec tmux attach-session -t "$SESSION"
 fi
