@@ -32,7 +32,14 @@ else
 fi
 
 cd "$DEST"
-./install.sh
+# When invoked via `curl … | bash`, our own stdin is the bootstrap script.
+# Redirect install.sh's stdin from /dev/tty so its prompts read from the
+# terminal instead of consuming bootstrap's heredoc body.
+if [[ -r /dev/tty ]]; then
+  ./install.sh </dev/tty
+else
+  ./install.sh
+fi
 
 cat <<EOF
 

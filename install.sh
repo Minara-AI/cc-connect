@@ -45,7 +45,14 @@ confirm() {
   local prompt="$1" default="${2:-Y}"
   if [[ $ASSUME_YES -eq 1 ]]; then return 0; fi
   local hint="[Y/n]"; [[ "$default" == "n" ]] && hint="[y/N]"
-  read -r -p "$prompt $hint " ans || ans=""
+  # Read from /dev/tty so `curl … | bash` (which pipes the script via stdin)
+  # doesn't have its read consume bytes from the script body itself.
+  local ans=""
+  if [[ -r /dev/tty ]]; then
+    read -r -p "$prompt $hint " ans </dev/tty || ans=""
+  else
+    read -r -p "$prompt $hint " ans || ans=""
+  fi
   ans="${ans:-$default}"
   [[ "$ans" =~ ^[Yy]$ ]]
 }
