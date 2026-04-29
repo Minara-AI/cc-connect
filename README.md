@@ -38,13 +38,21 @@ Full architecture: [`PROTOCOL.md`](./PROTOCOL.md). Decision rationale: [`docs/ad
 
 You need: macOS or Linux, Rust ≥ 1.85 (or let the installer install it for you), a working Claude Code install.
 
-### One-liner
+### One-liner (`curl | bash`)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Minara-AI/cc-connect/main/scripts/bootstrap.sh | bash
+```
+
+Clones into `~/cc-connect` (override with `CC_CONNECT_DIR=…`), runs the full installer, prints the next command. Best for a colleague you're handing this to cold.
+
+### Or clone + install yourself
 
 ```bash
 git clone https://github.com/Minara-AI/cc-connect.git && cd cc-connect && ./install.sh
 ```
 
-That's it. The script checks the toolchain (offers `rustup` if Rust is missing), runs the release build, backs up `~/.claude/settings.json` and merges the `UserPromptSubmit` hook entry idempotently, then runs `cc-connect doctor` to verify. Pass `--yes` for unattended, `--skip-build` to reuse an existing `target/release/`. Restart Claude Code afterwards so it picks up the new hook.
+That's it. The script checks the toolchain (offers `rustup` if Rust is missing), runs the release build, backs up `~/.claude/settings.json`, idempotently registers both the `UserPromptSubmit` hook and the `cc-connect-mcp` server, then runs `cc-connect doctor` to verify. Pass `--yes` for unattended, `--skip-build` to reuse an existing `target/release/`. Restart Claude Code afterwards so it picks up the new hook + MCP tools.
 
 First build pulls the iroh stack and the patched-vendored `ed25519` / `ed25519-dalek` (see `vendored/`); takes ~5-10 minutes.
 

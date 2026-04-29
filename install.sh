@@ -92,8 +92,10 @@ fi
 
 CONNECT_BIN="$REPO_ROOT/target/release/cc-connect"
 HOOK_BIN="$REPO_ROOT/target/release/cc-connect-hook"
+MCP_BIN="$REPO_ROOT/target/release/cc-connect-mcp"
 [[ -x "$CONNECT_BIN" ]] || fail "missing $CONNECT_BIN — re-run without --skip-build."
 [[ -x "$HOOK_BIN" ]] || fail "missing $HOOK_BIN — re-run without --skip-build."
+[[ -x "$MCP_BIN" ]] || fail "missing $MCP_BIN — re-run without --skip-build."
 
 # ---------- 3. wire the UserPromptSubmit hook ---------------------------------
 CLAUDE_DIR="$HOME/.claude"
@@ -162,6 +164,39 @@ settings_path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 }
 
+install_mcp_jq() {
+  # Register cc-connect-mcp in settings.json::mcpServers. Idempotent —
+  # any existing "cc-connect" entry is overwritten. Other tools' entries
+  # are left alone.
+  local mcp_path="$1" tmp
+  tmp="$(mktemp)"
+  if [[ -s "$SETTINGS" ]]; then
+    jq --arg path "$mcp_path" '
+      .mcpServers //= {} |
+      .mcpServers["cc-connect"] = {command: $path, args: []}
+    ' "$SETTINGS" > "$tmp"
+  else
+    jq -n --arg path "$mcp_path" '
+      {mcpServers: {"cc-connect": {command: $path, args: []}}}
+    ' > "$tmp"
+  fi
+  mv "$tmp" "$SETTINGS"
+}
+
+install_mcp_python() {
+  local mcp_path="$1"
+  python3 - "$SETTINGS" "$mcp_path" <<'PY'
+import json, sys, pathlib
+settings_path, mcp_path = pathlib.Path(sys.argv[1]), sys.argv[2]
+data = {}
+if settings_path.exists() and settings_path.stat().st_size > 0:
+    data = json.loads(settings_path.read_text())
+servers = data.setdefault("mcpServers", {})
+servers["cc-connect"] = {"command": mcp_path, "args": []}
+settings_path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+
 if [[ -f "$SETTINGS" ]]; then
   cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d-%H%M%S)"
   ok "backed up existing settings.json"
@@ -179,6 +214,20 @@ if confirm "Install UserPromptSubmit hook → $SETTINGS?" Y; then
   ok "hook installed: $HOOK_BIN"
 else
   warn "skipped settings.json edit. Hook NOT wired — \`cc-connect\` chats won't surface in Claude Code until you add the hook manually."
+fi
+
+if confirm "Install cc-connect MCP server → $SETTINGS::mcpServers?" Y; then
+  if command -v jq >/dev/null 2>&1; then
+    install_mcp_jq "$MCP_BIN"
+  elif command -v python3 >/dev/null 2>&1; then
+    install_mcp_python "$MCP_BIN"
+  else
+    fail "neither jq nor python3 available — install one and re-run, or edit $SETTINGS manually."
+  fi
+  chmod 600 "$SETTINGS"
+  ok "mcp server installed: $MCP_BIN"
+else
+  warn "skipped MCP install. Claude in your room won't be able to call cc_send / cc_at / cc_drop / cc_save_summary etc."
 fi
 
 # ---------- 4. doctor smoke check --------------------------------------------
