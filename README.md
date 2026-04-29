@@ -41,7 +41,7 @@ You need: macOS or Linux, Rust ≥ 1.85 (or let the installer install it for you
 ### One-liner (`curl | bash`)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Minara-AI/cc-connect/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Minara-AI/minara-connect/main/scripts/bootstrap.sh | bash
 ```
 
 Clones into `~/cc-connect` (override with `CC_CONNECT_DIR=…`), runs the full installer, prints the next command. Best for a colleague you're handing this to cold.
@@ -49,7 +49,7 @@ Clones into `~/cc-connect` (override with `CC_CONNECT_DIR=…`), runs the full i
 ### Or clone + install yourself
 
 ```bash
-git clone https://github.com/Minara-AI/cc-connect.git && cd cc-connect && ./install.sh
+git clone https://github.com/Minara-AI/minara-connect.git cc-connect && cd cc-connect && ./install.sh
 ```
 
 That's it. The script checks the toolchain (offers `rustup` if Rust is missing), runs the release build, backs up `~/.claude/settings.json`, idempotently registers both the `UserPromptSubmit` hook and the `cc-connect-mcp` server, then runs `cc-connect doctor` to verify. Pass `--yes` for unattended, `--skip-build` to reuse an existing `target/release/`. Restart Claude Code afterwards so it picks up the new hook + MCP tools.
@@ -60,7 +60,7 @@ First build pulls the iroh stack and the patched-vendored `ed25519` / `ed25519-d
 
 Open Claude Code in any directory and paste:
 
-> Clone https://github.com/Minara-AI/cc-connect, run its `install.sh`, then walk me through the `cc-connect doctor` output and tell me how to start a chat room.
+> Clone https://github.com/Minara-AI/minara-connect, run its `install.sh`, then walk me through the `cc-connect doctor` output and tell me how to start a chat room.
 
 The repo ships a `cc-connect-setup` skill at `.claude/skills/cc-connect-setup/SKILL.md`, so once Claude `cd`s into the clone it picks up the skill automatically and knows the failure modes.
 

@@ -2,7 +2,7 @@
 # bootstrap.sh — true one-liner clone + install for cc-connect.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Minara-AI/cc-connect/main/scripts/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Minara-AI/minara-connect/main/scripts/bootstrap.sh | bash
 #
 # Override the install location (default: ~/cc-connect):
 #   curl -fsSL <…/bootstrap.sh> | CC_CONNECT_DIR=/opt/cc-connect bash
@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-REPO=https://github.com/Minara-AI/cc-connect.git
+REPO=https://github.com/Minara-AI/minara-connect.git
 DEST="${CC_CONNECT_DIR:-$HOME/cc-connect}"
 
 if ! command -v git >/dev/null 2>&1; then
