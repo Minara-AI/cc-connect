@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { theme } from "../theme.ts";
 
 export interface MentionPopupProps {
   candidates: readonly string[];
@@ -11,21 +12,20 @@ export interface MentionPopupProps {
 export function MentionPopup({ candidates, selectedIdx }: MentionPopupProps) {
   if (candidates.length === 0) return null;
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor="cyan"
-      paddingX={1}
-    >
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1}>
       {candidates.map((nick, i) => {
         const sel = i === selectedIdx;
         return (
-          <Text key={`${nick}-${i}`} color={sel ? "black" : "white"} backgroundColor={sel ? "cyan" : undefined}>
+          <Text
+            key={`${nick}-${i}`}
+            color={sel ? theme.fg : theme.mute}
+            backgroundColor={sel ? theme.accent : undefined}
+          >
             {sel ? "▶ " : "  "}@{nick}
           </Text>
         );
       })}
-      <Text dimColor>↑↓ select · Tab/Enter accept · Esc cancel</Text>
+      <Text color={theme.mute}>↑↓ select · Tab/Enter accept · Esc cancel</Text>
     </Box>
   );
 }

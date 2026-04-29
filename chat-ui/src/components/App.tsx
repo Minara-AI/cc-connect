@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { spawnSync } from "node:child_process";
 import { HeaderBar } from "./HeaderBar.tsx";
 import { ChatScrollback } from "./ChatScrollback.tsx";
@@ -10,6 +10,7 @@ import { tailEvents, tailLog } from "../log_tail.ts";
 import { ccSend } from "../ipc.ts";
 import { readChatDaemonPidFile, readSelfNick } from "../ticket.ts";
 import { completeAt, currentAtToken, mentionCandidates } from "../mention.ts";
+import { theme } from "../theme.ts";
 
 export interface AppProps {
   topic: string;
@@ -32,7 +33,6 @@ export function App({ topic }: AppProps) {
   const [scrollOffset, setScrollOffset] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
-  const [cursorBlink, setCursorBlink] = useState(true);
   const [statusFlash, setStatusFlash] = useState<string | null>(null);
   const recentNicksRef = useRef<string[]>([]);
 
@@ -75,11 +75,9 @@ export function App({ topic }: AppProps) {
     return () => handle.close();
   }, [topic]);
 
-  // Cursor blink.
-  useEffect(() => {
-    const t = setInterval(() => setCursorBlink((v) => !v), 500);
-    return () => clearInterval(t);
-  }, []);
+  // Cursor: always rendered. We previously toggled cursorBlink at 500ms
+  // to mimic blinking, but Ink redraws the whole tree on every state
+  // change, which surfaces in zellij panes as a full-screen flicker.
 
   // Status flash auto-clear.
   useEffect(() => {
@@ -210,13 +208,16 @@ export function App({ topic }: AppProps) {
       {popupVisible ? <MentionPopup candidates={popupCandidates} selectedIdx={mentionIdx} /> : null}
       {ticket && messages.length === 0 ? (
         <Box paddingX={1}>
-          {/* @ts-ignore -- Text not imported here intentionally; use HeaderBar style */}
+          <Text>
+            <Text color={theme.mute}>share ticket · </Text>
+            <Text color={theme.accent}>Ctrl-Y</Text>
+            <Text color={theme.mute}> to copy</Text>
+          </Text>
         </Box>
       ) : null}
-      <InputBox value={input} cursorVisible={cursorBlink} />
+      <InputBox value={input} cursorVisible={true} />
       {statusFlash ? (
         <Box paddingX={1}>
-          {/* status line */}
           <StatusLine text={statusFlash} />
         </Box>
       ) : null}
@@ -224,9 +225,7 @@ export function App({ topic }: AppProps) {
   );
 }
 
-import { Text } from "ink";
-
 function StatusLine({ text }: { text: string }) {
   const isErr = text.startsWith("✗") || text.startsWith("!");
-  return <Text color={isErr ? "red" : "green"}>{text}</Text>;
+  return <Text color={isErr ? theme.danger : theme.success}>{text}</Text>;
 }

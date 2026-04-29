@@ -59,7 +59,7 @@ function main(): void {
   if (topic === null || topic.length === 0) {
     // eslint-disable-next-line no-console
     console.error(
-      "cc-chat-ui: missing --topic <topic_hex> (or set CC_CONNECT_ROOM). Use -h for help.",
+      "cc-chat-ui: missing --topic <topic_hex> (or set CC_CONNECT_ROOM). Use -h for help."
     );
     process.exit(2);
   }

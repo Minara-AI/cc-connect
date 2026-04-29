@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { theme } from "../theme.ts";
 
 export interface InputBoxProps {
   value: string;
@@ -11,11 +12,11 @@ export interface InputBoxProps {
  *  global useInput hook and writes back into `value`. */
 export function InputBox({ value, cursorVisible }: InputBoxProps) {
   return (
-    <Box borderStyle="single" borderColor="gray" paddingX={1}>
+    <Box borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text>
-        <Text color="cyan">› </Text>
-        {value}
-        {cursorVisible ? <Text color="white" backgroundColor="white">{" "}</Text> : null}
+        <Text color={theme.accent}>{"› "}</Text>
+        <Text color={theme.fg}>{value}</Text>
+        {cursorVisible ? <Text backgroundColor={theme.accent}> </Text> : null}
       </Text>
     </Box>
   );

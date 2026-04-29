@@ -34,7 +34,7 @@ export function currentAtToken(input: string): string | null {
 export function mentionCandidates(
   recent: readonly string[],
   prefix: string,
-  selfNick: string | null,
+  selfNick: string | null
 ): string[] {
   const lower = prefix.toLowerCase();
   const selfLower = selfNick && selfNick.length > 0 ? selfNick.toLowerCase() : null;

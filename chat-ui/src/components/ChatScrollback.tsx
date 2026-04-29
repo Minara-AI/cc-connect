@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { EventLine, Message } from "../types.ts";
 import { KIND_FILE_DROP } from "../types.ts";
 import { bodyMentionsSelf } from "../mention.ts";
+import { theme } from "../theme.ts";
 
 export interface ChatScrollbackProps {
   messages: readonly Message[];
@@ -41,7 +42,9 @@ type RenderRow =
 function formatHHMM(tsMs: number): string {
   const totalMin = Math.floor(tsMs / 60000);
   const dayMin = ((totalMin % 1440) + 1440) % 1440;
-  const hh = Math.floor(dayMin / 60).toString().padStart(2, "0");
+  const hh = Math.floor(dayMin / 60)
+    .toString()
+    .padStart(2, "0");
   const mm = (dayMin % 60).toString().padStart(2, "0");
   return `${hh}:${mm}`;
 }
@@ -51,8 +54,9 @@ function nickFor(msg: Message): string {
   return msg.author.slice(0, 8);
 }
 
-/** L/R bubble layout. Own messages right-aligned, peer messages left.
- *  Mentions of self get a red `(@me)` prefix on peer lines. */
+/** L/R bubble layout. Own messages right-aligned in accent; peer messages
+ *  left-aligned with bold nick. Mentions of self get a red `(@me)` prefix
+ *  and red body. Daemon events render in warn-orange. */
 export function ChatScrollback({
   messages,
   events,
@@ -99,30 +103,30 @@ export function ChatScrollback({
     <Box flexDirection="column" flexGrow={1}>
       {visible.map((r) =>
         r.kind === "msg" ? (
-          <Box
-            key={r.key}
-            flexDirection="row"
-            justifyContent={r.isOwn ? "flex-end" : "flex-start"}
-          >
+          <Box key={r.key} flexDirection="row" justifyContent={r.isOwn ? "flex-end" : "flex-start"}>
             <Text>
-              <Text dimColor>{formatHHMM(r.ts)} </Text>
-              {r.isMention ? <Text color="red" bold>(@me) </Text> : null}
-              <Text bold color={r.isOwn ? "green" : "cyan"}>
+              <Text color={theme.mute}>{formatHHMM(r.ts)} </Text>
+              {r.isMention ? (
+                <Text color={theme.danger} bold>
+                  (@me){" "}
+                </Text>
+              ) : null}
+              <Text bold={!r.isOwn} color={r.isOwn ? theme.accent : theme.fg}>
                 [{r.nick}]
               </Text>{" "}
-              <Text color={r.isMention ? "red" : undefined}>{r.body}</Text>
+              <Text color={r.isMention ? theme.danger : theme.fg}>{r.body}</Text>
             </Text>
           </Box>
         ) : (
           <Box key={r.key} flexDirection="row">
-            <Text color="yellow" dimColor>
-              {formatHHMM(r.ts)} ⚠ {r.body}
+            <Text color={theme.warn}>
+              <Text color={theme.mute}>{formatHHMM(r.ts)} </Text>⚠ {r.body}
             </Text>
           </Box>
-        ),
+        )
       )}
       {scrollOffset > 0 ? (
-        <Text dimColor>… {scrollOffset} rows back · PgDn to follow</Text>
+        <Text color={theme.mute}>… {scrollOffset} rows back · PgDn to follow</Text>
       ) : null}
     </Box>
   );

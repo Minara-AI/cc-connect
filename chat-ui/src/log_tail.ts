@@ -53,11 +53,7 @@ export function tailEvents(topic: string, onEvent: EventLineHandler): LogTailHan
  *  fallback to polling. Both `log.jsonl` and `events.jsonl` are
  *  append-only; if the file shrinks (truncation), we reset offset to 0
  *  and re-read rather than miss data. */
-function tailJsonl<T>(
-  path: string,
-  onLine: (parsed: T) => void,
-  label: string,
-): LogTailHandle {
+function tailJsonl<T>(path: string, onLine: (parsed: T) => void, label: string): LogTailHandle {
   let offset = 0;
   let pending = false;
   let closed = false;

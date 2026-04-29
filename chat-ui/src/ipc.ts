@@ -31,7 +31,7 @@ export function resolveSocketPath(topic: string): string | null {
  *  simple and avoids long-lived state on the client side. */
 export async function ipcCall(
   topic: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<IpcResponse> {
   const sock = resolveSocketPath(topic);
   if (sock === null) {
@@ -86,11 +86,7 @@ export async function ccSend(topic: string, body: string): Promise<IpcResponse> 
   return ipcCall(topic, { action: "send", body, source: "human" });
 }
 
-export async function ccAt(
-  topic: string,
-  nick: string,
-  body: string,
-): Promise<IpcResponse> {
+export async function ccAt(topic: string, nick: string, body: string): Promise<IpcResponse> {
   return ipcCall(topic, { action: "at", nick, body, source: "human" });
 }
 

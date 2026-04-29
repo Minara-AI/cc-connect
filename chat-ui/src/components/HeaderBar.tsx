@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { theme } from "../theme.ts";
 
 export interface HeaderBarProps {
   topicShort: string;
@@ -13,14 +14,16 @@ export interface HeaderBarProps {
 export function HeaderBar({ topicShort, selfNick, daemonAlive }: HeaderBarProps) {
   return (
     <Box flexDirection="row" justifyContent="space-between" paddingX={1}>
-      <Text bold>
-        <Text color="cyan">Room </Text>
-        <Text color="white">{topicShort}</Text>
+      <Text>
+        <Text color={theme.accent}>◆ </Text>
+        <Text color={theme.mute}>room </Text>
+        <Text color={theme.fg}>{topicShort}</Text>
       </Text>
-      <Text dimColor>
-        you = <Text color="green">{selfNick ?? "(no nick)"}</Text>
-        {"  "}
-        <Text color={daemonAlive ? "green" : "red"}>
+      <Text>
+        <Text color={theme.mute}>you </Text>
+        <Text color={theme.accent}>{selfNick ?? "(no nick)"}</Text>
+        <Text color={theme.mute}>{"  ·  "}</Text>
+        <Text color={daemonAlive ? theme.success : theme.danger}>
           {daemonAlive ? "● daemon up" : "○ daemon down"}
         </Text>
       </Text>
