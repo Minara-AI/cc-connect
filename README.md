@@ -117,7 +117,7 @@ $ ./target/release/cc-connect room join cc1-…
 ├────────────────────────────────────────────────────────────────────────────────┤
 │ ┌─ 🤖 claude · team-A ───────────────┐ ┌─ 💬 chat · team-A ─────────────────┐│
 │ │ $                                  │ │ [bob] use postgres                  ││
-│ │                                    │ │ (@me) [alice] @yijian PR ?          ││
+│ │                                    │ │ (@me) [alice] @dave PR ?          ││
 │ │                                    │ │ › yes, on it                        ││
 │ └────────────────────────────────────┘ └────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -276,7 +276,7 @@ Every prompt's hook output is composed from three sections, each budget-bounded:
   - alice  api.md      (4096B) @file:/Users/.../files/01YY-api.md
 
 [chatroom @bob 12:00Z] use postgres             ← unread chat verbatim (~5 KiB)
-[chatroom for-you @alice 12:01Z] @yijian PR ?
+[chatroom for-you @alice 12:01Z] @dave PR ?
 ```
 
 `INDEX.md` is auto-maintained by `chat_session` — every file_drop appends a line. `summary.md` is Claude-driven: ask the embedded Claude to "summarise the room and save it" and it'll call `cc_save_summary` after digesting `cc_recent`. Future prompts pick up the summary so long-running rooms don't burn the 8 KiB budget on raw scrollback.

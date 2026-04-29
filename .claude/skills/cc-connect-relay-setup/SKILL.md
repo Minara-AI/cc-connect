@@ -11,7 +11,7 @@ Goal: take a Linux server the user owns + a (sub)domain they control, and stand 
 
 Ask in this order, one at a time. Don't dump a wall of questions.
 
-1. **Server SSH target** — `user@host` (e.g. `yijian@124.243.176.37`). Verify the user has key-based SSH set up (`ssh -o BatchMode=yes <target> 'echo ok'` should succeed). If it asks for a password, stop and ask the user to add their key to the server's `~/.ssh/authorized_keys`. Don't attempt password auth — it leaks via process args and we can't pipe interactive prompts safely.
+1. **Server SSH target** — `user@host` (e.g. `deploy@relay.example.com`). Verify the user has key-based SSH set up (`ssh -o BatchMode=yes <target> 'echo ok'` should succeed). If it asks for a password, stop and ask the user to add their key to the server's `~/.ssh/authorized_keys`. Don't attempt password auth — it leaks via process args and we can't pipe interactive prompts safely.
 2. **Domain for the relay** — the full hostname (e.g. `relay.example.com`). Verify it resolves to the server's IP via `dig +short <hostname> A` from your local machine. If it doesn't, stop and ask the user to add an A record first; don't proceed with cert issuance until DNS is right.
 3. **Email for Let's Encrypt** — required for the renewal-warning notifications. Falls into the certbot `--email` flag.
 

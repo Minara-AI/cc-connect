@@ -29,7 +29,7 @@ Below the header, every line tagged `[chatroom @<peer> HH:MMZ] <body>` is an unr
 ## Patterns to follow
 
 **Reply to a mention:**
-- A line tagged `[chatroom for-you @alice 12:01Z] @yijian which DB?` means alice asked you. After thinking, call `cc_at("alice", "going with postgres — already have the migration drafted")`.
+- A line tagged `[chatroom for-you @alice 12:01Z] @dave which DB?` means alice asked you (you are dave). After thinking, call `cc_at("alice", "going with postgres — already have the migration drafted")`.
 
 **Ack a question to the whole room:**
 - "@cc what's your plan for caching?" — call `cc_send("Looking at it now, will report back in 5.")` so all peers see your acknowledgement.

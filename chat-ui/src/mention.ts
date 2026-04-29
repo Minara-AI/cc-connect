@@ -84,8 +84,8 @@ export function completeAt(input: string, fullNick: string): string {
 /** Body-content scan for @-mentions of the receiving user. Mirrors
  *  `cc-connect-core::hook_format::mentions_self`. The match is
  *  word-boundary against nick-continuation chars (`[A-Za-z0-9_-]`), so
- *  `@yj-cc 你好` does NOT register as a mention of `yj`. Keep this and
- *  the Rust side in sync — see the `mentions_self_respects_word_boundary`
+ *  `@alice-cc hi` does NOT register as a mention of `alice`. Keep this
+ *  and the Rust side in sync — see the `mentions_self_respects_word_boundary`
  *  test in hook_format.rs. */
 export function bodyMentionsSelf(body: string, selfNick: string | null): boolean {
   const lower = body.toLowerCase();
@@ -98,10 +98,10 @@ export function bodyMentionsSelf(body: string, selfNick: string | null): boolean
   // Note: deliberately NOT matching the AI mirror form `<selfNick>-cc`
   // here. The Rust `mentions_self` does match it (so the for-you tag
   // and `cc_wait_for_mention` wake the local claude), but for the
-  // chat-ui's `(@me)` red highlight the user's mental model is "@YJ-cc
-  // is addressed to a different entity than me." Highlighting your own
-  // outgoing `@<self>-cc` message as `(@me)` is jarring and incorrect
-  // from the user's perspective.
+  // chat-ui's `(@me)` red highlight the user's mental model is
+  // "@<self>-cc is addressed to a different entity than me."
+  // Highlighting your own outgoing `@<self>-cc` message as `(@me)` is
+  // jarring and incorrect from the user's perspective.
   return false;
 }
 

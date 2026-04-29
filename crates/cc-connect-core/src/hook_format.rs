@@ -300,8 +300,8 @@ pub fn is_owner_directive(
 ///
 /// "Word-boundary" means the character immediately after the token (if any)
 /// must not be a nick-continuation char (`[A-Za-z0-9_-]`). Without this,
-/// `@yj` would falsely match the body `@yj-cc hi`, treating a message
-/// addressed to `yj-cc` as a mention of `yj`. Pre-1.0 fix; see test
+/// `@alice` would falsely match the body `@alice-cc hi`, treating a message
+/// addressed to `alice-cc` as a mention of `alice`. Pre-1.0 fix; see test
 /// `mentions_self_respects_word_boundary`.
 pub fn mentions_self(body: &str, self_nick: Option<&str>) -> bool {
     let lower = body.to_ascii_lowercase();

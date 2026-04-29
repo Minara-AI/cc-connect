@@ -21,6 +21,7 @@
 # Plugin state (oh-my-claudecode etc.)
 .omc/
 .claude/local/
+.claude/settings.local.json
 
 # cc-connect runtime state — do NOT commit personal identity / room logs
 # (this directory is for users running cc-connect, not for the repo itself)
