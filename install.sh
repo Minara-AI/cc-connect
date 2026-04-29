@@ -88,6 +88,67 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 ok "git $(git --version | awk '{print $3}')"
 
+# ---------- 1.5. multiplexer detection ----------------------------------------
+# `cc-connect room start/join` prefers zellij, falls back to tmux, and
+# falls back again to the embedded cc-connect-tui if neither is found.
+# We don't *require* one — but the multi-pane chat-ui experience needs it.
+have_zellij=0; have_tmux=0
+command -v zellij >/dev/null 2>&1 && have_zellij=1
+command -v tmux   >/dev/null 2>&1 && have_tmux=1
+if [[ $have_zellij -eq 1 ]]; then
+  ok "zellij $(zellij --version | awk '{print $2}')"
+fi
+if [[ $have_tmux -eq 1 ]]; then
+  ok "tmux $(tmux -V | awk '{print $2}')"
+fi
+if [[ $have_zellij -eq 1 && $have_tmux -eq 1 ]]; then
+  say "both zellij and tmux found — zellij will be preferred at launch"
+fi
+if [[ $have_zellij -eq 0 && $have_tmux -eq 0 ]]; then
+  warn "neither zellij nor tmux found — \`cc-connect room\` will fall back to the"
+  warn "embedded cc-connect-tui (single-window). For the recommended multi-pane"
+  warn "chat-ui experience, install one of:"
+  case "$(uname -s)" in
+    Darwin)
+      warn "  brew install zellij    # recommended"
+      warn "  brew install tmux      # also fine"
+      ;;
+    Linux)
+      warn "  cargo install --locked zellij    # zellij not always packaged"
+      warn "  apt install tmux                 # debian/ubuntu"
+      warn "  dnf install tmux                 # fedora"
+      ;;
+  esac
+fi
+
+# ---------- 1.6. bun + chat-ui build ------------------------------------------
+# chat-ui (Bun + React + Ink) is the right pane of the multiplexer layout.
+# Without bun installed, we skip the chat-ui build and the launcher's
+# multiplexer paths fall back to cc-connect-tui.
+need_chat_ui_build=1
+if ! command -v bun >/dev/null 2>&1; then
+  warn "bun not found — chat-ui (Bun + React + Ink) won't be built."
+  if confirm "Install bun via the official installer (curl https://bun.sh/install | bash)?" Y; then
+    curl -fsSL https://bun.sh/install | bash
+    # bun's installer writes to ~/.bun/bin and updates shell rc; pull it
+    # into THIS shell so the build below sees it.
+    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    if ! command -v bun >/dev/null 2>&1; then
+      warn "bun installed but not on PATH yet. Open a new shell, then re-run:"
+      warn "  ./install.sh --skip-build"
+      need_chat_ui_build=0
+    fi
+  else
+    warn "Skipping bun install. The multiplexer launcher will fall back to"
+    warn "cc-connect-tui until you run \`./install.sh\` again with bun on PATH."
+    need_chat_ui_build=0
+  fi
+fi
+if command -v bun >/dev/null 2>&1; then
+  ok "bun $(bun --version)"
+fi
+
 # ---------- 2. workspace build ------------------------------------------------
 if [[ $SKIP_BUILD -eq 0 ]]; then
   say "building workspace (release) — first build takes 5-10 min"
@@ -100,9 +161,27 @@ fi
 CONNECT_BIN="$REPO_ROOT/target/release/cc-connect"
 HOOK_BIN="$REPO_ROOT/target/release/cc-connect-hook"
 MCP_BIN="$REPO_ROOT/target/release/cc-connect-mcp"
+CHAT_UI_BIN="$REPO_ROOT/target/release/cc-chat-ui"
 [[ -x "$CONNECT_BIN" ]] || fail "missing $CONNECT_BIN — re-run without --skip-build."
 [[ -x "$HOOK_BIN" ]] || fail "missing $HOOK_BIN — re-run without --skip-build."
 [[ -x "$MCP_BIN" ]] || fail "missing $MCP_BIN — re-run without --skip-build."
+
+# ---------- 2.5. chat-ui build (Bun) ------------------------------------------
+if [[ $need_chat_ui_build -eq 1 ]] && command -v bun >/dev/null 2>&1; then
+  if [[ $SKIP_BUILD -eq 0 || ! -x "$CHAT_UI_BIN" ]]; then
+    say "building chat-ui (bun install + bun build --compile)"
+    ( cd "$REPO_ROOT/chat-ui" && bun install && bun run build )
+    if [[ -x "$CHAT_UI_BIN" ]]; then
+      ok "chat-ui built: $CHAT_UI_BIN"
+    else
+      warn "chat-ui build did not produce $CHAT_UI_BIN — multiplexer launches will fall back to cc-connect-tui."
+    fi
+  else
+    ok "chat-ui already built: $CHAT_UI_BIN (--skip-build)"
+  fi
+else
+  warn "skipping chat-ui build (bun unavailable or declined). Multiplexer launches will fall back to cc-connect-tui."
+fi
 
 # ---------- 3. wire the UserPromptSubmit hook ---------------------------------
 CLAUDE_DIR="$HOME/.claude"
@@ -268,7 +347,7 @@ fi
 BIN_DIR="$HOME/.local/bin"
 if confirm "Symlink binaries to $BIN_DIR so you can run them from any directory?" Y; then
   mkdir -p "$BIN_DIR"
-  for bin in cc-connect cc-connect-tui cc-connect-hook cc-connect-mcp; do
+  for bin in cc-connect cc-connect-tui cc-connect-hook cc-connect-mcp cc-chat-ui; do
     src="$REPO_ROOT/target/release/$bin"
     dest="$BIN_DIR/$bin"
     if [[ ! -x "$src" ]]; then
@@ -301,11 +380,23 @@ Next steps:
   - Recommended start:
         cc-connect room start          (if $BIN_DIR is on PATH)
         $REPO_ROOT/target/release/cc-connect room start    (otherwise)
-  - Tab keys inside the TUI: 1-9 switch, Ctrl-N new, Ctrl-W close,
-    F2 / Tab switch pane, Ctrl-Y copy ticket, Ctrl-Q quit.
+
+  cc-connect room launches a 2-pane terminal layout:
+    LEFT  60% : claude (with CC_CONNECT_ROOM env so the hook fires)
+    RIGHT 40% : cc-chat-ui (chat scrollback + input)
+  Multiplexer preference: zellij > tmux > embedded cc-connect-tui (fallback).
+
+  Multiplexer hotkeys you'll likely want:
+    zellij : Ctrl-p arrow      switch pane
+    zellij : Ctrl-q            quit (chat-ui owns Ctrl-Q inside its pane)
+    tmux   : Ctrl-b arrow      switch pane (default prefix)
+  Inside cc-chat-ui:
+    Ctrl-Y copy ticket  ·  PgUp/PgDn scrollback  ·  Tab/Enter @-mention completion
+
   - Self-hosted relay: see README.md "Self-hosted relay (optional)".
 
 Settings live at: $SETTINGS
 Hook binary:      $HOOK_BIN
 MCP binary:       $MCP_BIN
+chat-ui binary:   $CHAT_UI_BIN
 NEXT
