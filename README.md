@@ -212,30 +212,49 @@ Maps Pubkey strings (full 52-char base32) to a human-readable nickname. The mapp
 
 ### Letting Claude talk back (MCP)
 
-The TUI starts an MCP server (`cc-connect-mcp`) the first time you run it. It exposes five tools to the embedded Claude:
+The TUI starts an MCP server (`cc-connect-mcp`) the first time you run it. It exposes six tools to the embedded Claude:
 
-| Tool             | What it does |
-|------------------|--------------|
-| `cc_send`        | Broadcast a chat message into your room |
-| `cc_at`          | Same as send, but with `@<nick>` prefix (mentions) |
-| `cc_drop`        | Share a local file with peers (iroh-blobs) |
-| `cc_recent`      | Last N chat lines from this room's log |
-| `cc_list_files`  | Files dropped into the room (with local paths) |
+| Tool                | What it does |
+|---------------------|--------------|
+| `cc_send`           | Broadcast a chat message into your room |
+| `cc_at`             | Same as send, but with `@<nick>` prefix (mentions) |
+| `cc_drop`           | Share a local file with peers (iroh-blobs) |
+| `cc_recent`         | Last N chat lines from this room's log |
+| `cc_list_files`     | Files dropped into the room (with local paths) |
+| `cc_save_summary`   | Overwrite this room's rolling summary (auto-injected on every prompt) |
 
 How the routing works:
 
 ```
 cc-connect-tui  ──spawns──►  claude  ──spawns──►  cc-connect-mcp
    |                            ↑                       │
-   | sets CC_CONNECT_ROOM env   | inherits env          │ dials
-   ▼                            │                       ▼
-chat_session  ◄─────────────────│────────  /tmp/cc-connect-$UID/sockets/<topic>.sock
+   | sets CC_CONNECT_ROOM env   | inherits env          │ reads $HOME/.cc-connect/
+   ▼                            │                       │ rooms/<topic>/chat.sock
+chat_session  ◄─────────────────│──────  /tmp/cc-<uid>-<rand>.sock (short, macOS-safe)
    (owns iroh + log + IPC)
 ```
 
-The MCP server reads `CC_CONNECT_ROOM` from its environment (set by the TUI, inherited through Claude Code) and dials the chat session's local Unix socket. Tools fail cleanly with "no active cc-connect room" if you start `claude` standalone without the TUI.
+The MCP server reads `CC_CONNECT_ROOM` from its environment (set by the TUI, inherited through Claude Code), looks up the absolute socket path in a HOME-side marker, and dials. Tools fail cleanly with "no active cc-connect room" if you start `claude` standalone without the TUI.
 
 Try it: in a TUI claude pane, ask "send '@all standup in 5' to the room". Claude calls `cc_at` and the message lands in everyone's chat scrollback.
+
+### Layered context injection
+
+Every prompt's hook output is composed from three sections, each budget-bounded:
+
+```
+[cc-connect summary]                            ← rolling summary (≤ 1.5 KiB)
+  Discussed Postgres vs SQLite (decided Postgres). …
+
+[cc-connect files]                              ← INDEX.md tail (≤ 1.5 KiB)
+  - bob    design.svg  (148B)  @file:/Users/.../files/01XX-design.svg
+  - alice  api.md      (4096B) @file:/Users/.../files/01YY-api.md
+
+[chatroom @bob 12:00Z] use postgres             ← unread chat verbatim (~5 KiB)
+[chatroom for-you @alice 12:01Z] @yijian PR ?
+```
+
+`INDEX.md` is auto-maintained by `chat_session` — every file_drop appends a line. `summary.md` is Claude-driven: ask the embedded Claude to "summarise the room and save it" and it'll call `cc_save_summary` after digesting `cc_recent`. Future prompts pick up the summary so long-running rooms don't burn the 8 KiB budget on raw scrollback.
 
 ---
 

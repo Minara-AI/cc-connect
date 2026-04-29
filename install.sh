@@ -192,10 +192,18 @@ $(printf "\033[1;32m✓ install complete\033[0m")
 
 Next steps:
   - Restart Claude Code so it picks up the new hook.
-  - Host a room:        $CONNECT_BIN host
-  - Join a room:        $CONNECT_BIN chat <ticket>
-  - LAN-only (no relay): pass --no-relay to host / chat
-  - Two-laptop demo:    see README.md "Two-laptop demo procedure"
+  - Recommended start:  $REPO_ROOT/target/release/cc-connect room start
+      (vertical TUI, one-shot wizard for nick + MCP server install)
+  - Or host/join the old way:
+      $CONNECT_BIN host
+      $CONNECT_BIN chat <ticket>
+  - LAN-only:           pass --no-relay
+  - Self-hosted relay:  see README.md "Self-hosted relay (optional)"
+
+The TUI registers an MCP server on first run that lets the embedded
+Claude reply into chat (cc_send / cc_at / cc_drop / cc_recent /
+cc_list_files / cc_save_summary). Run \`cc-connect room start\` once
+to wire that up.
 
 Settings live at: $SETTINGS
 Hook binary:      $HOOK_BIN
