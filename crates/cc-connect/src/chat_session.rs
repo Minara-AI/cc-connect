@@ -17,6 +17,7 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use cc_connect_core::{
+    drop_safety::{self, DropSafety},
     identity::Identity,
     log_io,
     message::Message,
@@ -726,6 +727,22 @@ async fn build_file_drop(
     let path = std::path::Path::new(path_str);
     let abs_path = std::path::absolute(path)
         .with_context(|| format!("absolute path of {path_str}"))?;
+    // Sensitive-path blocklist (SECURITY.md §"Mitigation today" /
+    // §"Operating guidance"). Closes the credential-exfil prompt-inject
+    // pivot; operators with a real need can opt out per process.
+    let bypass = std::env::var("CC_CONNECT_DROP_ALLOW_DANGEROUS")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    if !bypass {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        if let DropSafety::Block { reason } = drop_safety::evaluate(&abs_path, &home) {
+            return Err(anyhow!(
+                "DROP_REFUSED: {reason} (set CC_CONNECT_DROP_ALLOW_DANGEROUS=1 to override)"
+            ));
+        }
+    }
     let metadata = std::fs::metadata(&abs_path)
         .with_context(|| format!("stat {}", abs_path.display()))?;
     let size = metadata.len();
