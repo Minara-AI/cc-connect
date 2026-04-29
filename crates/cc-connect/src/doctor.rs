@@ -15,11 +15,13 @@ use anyhow::{bail, Result};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Run all doctor checks. Returns Err iff any check is FAIL.
 pub fn run() -> Result<()> {
     let mut report = Report::default();
 
+    print_self_info(&mut report);
     check_identity(&mut report);
     check_active_rooms_dir(&mut report);
     check_settings_json_hook(&mut report);
@@ -35,6 +37,82 @@ pub fn run() -> Result<()> {
         bail!("cc-connect doctor: {} check(s) FAIL", report.fail);
     }
     Ok(())
+}
+
+/// Surface the running cc-connect binary's path and build age. The most
+/// common "MCP doesn't have cc_wait_for_mention / hook orientation header
+/// looks wrong" failure mode is the user shipping with one clone but
+/// installing from another — printing path + mtime makes the staleness
+/// obvious at a glance.
+fn print_self_info(report: &mut Report) {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let age = age_of(&exe).unwrap_or_else(|| "?".to_string());
+    report.info(&format!(
+        "cc-connect binary: {} (built {})",
+        exe.display(),
+        age
+    ));
+}
+
+/// `mtime` of `path` rendered as a coarse "Ns/m/h/d ago" string, or
+/// `None` if the file isn't stat-able / the clock disagrees.
+fn age_of(path: &Path) -> Option<String> {
+    let mtime = fs::metadata(path).ok()?.modified().ok()?;
+    let dur = SystemTime::now().duration_since(mtime).ok()?;
+    let secs = dur.as_secs();
+    Some(if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h{}m ago", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d{}h ago", secs / 86_400, (secs % 86_400) / 3600)
+    })
+}
+
+/// Returns the number of whole seconds by which `path`'s mtime is older
+/// than `reference`'s mtime. Returns `None` if either stat fails or
+/// `path` is the same age or newer.
+fn staleness_secs(path: &Path, reference: &Path) -> Option<u64> {
+    let path_mtime = fs::metadata(path).ok()?.modified().ok()?;
+    let ref_mtime = fs::metadata(reference).ok()?.modified().ok()?;
+    ref_mtime
+        .duration_since(path_mtime)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Warn if the registered binary at `path` is significantly older than
+/// the cc-connect binary currently running. Catches the "I rebuilt in
+/// another clone but didn't re-install" footgun.
+fn maybe_warn_stale(report: &mut Report, label: &str, path: &Path) {
+    let Ok(self_exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(secs) = staleness_secs(path, &self_exe) else {
+        return;
+    };
+    // 60 s slack to absorb filesystem mtime precision and same-build
+    // ordering jitter.
+    if secs <= 60 {
+        return;
+    }
+    let pretty = if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d{}h", secs / 86_400, (secs % 86_400) / 3600)
+    };
+    report.warn(&format!(
+        "{label} is {pretty} older than the cc-connect binary you ran. \
+         If you've rebuilt elsewhere, run `./install.sh` from that clone, \
+         then restart Claude Code so it drops the now-stale child."
+    ));
 }
 
 #[derive(Default)]
@@ -237,10 +315,13 @@ fn check_settings_json_hook(report: &mut Report) {
         Ok(meta) => {
             let mode = meta.permissions().mode();
             if mode & 0o111 != 0 {
+                let age = age_of(p).unwrap_or_else(|| "?".to_string());
                 report.ok(&format!(
-                    "hook binary {} exists and is executable",
-                    p.display()
+                    "hook binary {} (built {}) exists and is executable",
+                    p.display(),
+                    age,
                 ));
+                maybe_warn_stale(report, "hook binary", p);
             } else {
                 report.fail(&format!("{} exists but is not executable", p.display()));
             }
@@ -318,11 +399,14 @@ fn check_settings_json_mcp(report: &mut Report) {
         Ok(meta) => {
             let mode = meta.permissions().mode();
             if mode & 0o111 != 0 {
+                let age = age_of(p).unwrap_or_else(|| "?".to_string());
                 report.ok(&format!(
-                    "mcp server {} exists and is executable (registered in {})",
+                    "mcp server {} (built {}) exists and is executable (registered in {})",
                     p.display(),
+                    age,
                     cfg_path.display()
                 ));
+                maybe_warn_stale(report, "mcp server", p);
             } else {
                 report.fail(&format!("{} exists but is not executable", p.display()));
             }

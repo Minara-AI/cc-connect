@@ -108,6 +108,19 @@ fn launch_room(
 // ---- setup wizard wrapper ----------------------------------------------
 
 fn setup_wizard(nick: Option<&str>) -> Result<()> {
+    // Run doctor first so the user always sees their cc-connect /
+    // cc-connect-hook / cc-connect-mcp binary paths + build ages. The
+    // most common "I rebuilt but it didn't take effect" failure mode is
+    // the user installing from one clone but invoking through a PATH
+    // symlink that resolves to a different (older) one — surfacing the
+    // mtimes makes that staleness obvious at a glance. Doctor's Err is
+    // informational, never blocking.
+    println!("[setup] running doctor...");
+    if let Err(e) = crate::doctor::run() {
+        eprintln!("(setup: doctor reported FAIL: {e:#})");
+    }
+    println!();
+
     if let Err(e) = crate::setup::ensure_hook_installed() {
         eprintln!("(setup: hook check failed: {e:#})");
     }
