@@ -65,7 +65,9 @@ if [ $has_chatui -eq 1 ]; then
       case "$f" in chat-ui/*) chatui_staged+=("$f") ;; esac
     done
     if [ ${#chatui_staged[@]} -gt 0 ]; then
-      if ! (cd chat-ui && bunx --bun prettier --check "${chatui_staged[@]/#chat-ui\//}"); then
+      # --ignore-unknown lets prettier silently skip files it can't parse
+      # (bun.lock, binaries, etc.) instead of failing the whole hook.
+      if ! (cd chat-ui && bunx --bun prettier --check --ignore-unknown "${chatui_staged[@]/#chat-ui\//}"); then
         echo "[pre-commit] prettier failed. Run: (cd chat-ui && bunx prettier --write .)" >&2
         fail=1
       fi

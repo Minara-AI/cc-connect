@@ -20,9 +20,13 @@
 
 # If first arg looks like a topic hex (64 chars, lowercase hex), consume
 # it as CC_CONNECT_ROOM. Anything else falls through to claude verbatim.
-if [ "$#" -gt 0 ]; then
+#
+# Length + content split (rather than `[0-9a-f]` × 64 in a single case
+# pattern) so we can't quietly miscount the brackets. POSIX-portable.
+if [ "$#" -gt 0 ] && [ "${#1}" -eq 64 ]; then
   case "$1" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+    *[!0-9a-f]*) ;;  # contains a non-hex char — not a topic
+    *)
       export CC_CONNECT_ROOM="$1"
       shift
       ;;
