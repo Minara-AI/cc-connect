@@ -30,8 +30,7 @@ const TEST_TS_MS: i64 = 0; // 1970-01-01T00:00:00Z → "00:00Z" in HH:MMZ
 const TEST_BODY: &str = "hello from the magic moment";
 const TEST_SESSION: &str = "test-session-001";
 // 64 lowercase hex chars = a 32-byte topic id of all zeros.
-const TEST_TOPIC_HEX: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+const TEST_TOPIC_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[test]
 fn magic_moment_hook_emits_canonical_chatroom_line_and_advances_cursor() {
@@ -77,11 +76,7 @@ fn magic_moment_hook_emits_canonical_chatroom_line_and_advances_cursor() {
     // PROTOCOL.md §7.3 step 5 single-Room format:
     //   `[chatroom @<nick> <hh:mm>Z] <body>\n`
     // Without nicknames.json, nick falls back to the first 8 chars of the Pubkey.
-    let expected_tail = format!(
-        "[chatroom @{} 00:00Z] {}\n",
-        &TEST_PUBKEY[..8],
-        TEST_BODY
-    );
+    let expected_tail = format!("[chatroom @{} 00:00Z] {}\n", &TEST_PUBKEY[..8], TEST_BODY);
     let actual = String::from_utf8(out.stdout).expect("hook stdout is UTF-8");
     assert!(
         actual.ends_with(&expected_tail),
@@ -99,8 +94,8 @@ fn magic_moment_hook_emits_canonical_chatroom_line_and_advances_cursor() {
         .join("cursors")
         .join(TEST_TOPIC_HEX)
         .join(format!("{TEST_SESSION}.cursor"));
-    let raw = std::fs::read_to_string(&cursor_path)
-        .expect("cursor file must exist after hook fires");
+    let raw =
+        std::fs::read_to_string(&cursor_path).expect("cursor file must exist after hook fires");
     assert_eq!(
         raw.trim_end_matches('\n'),
         TEST_MSG_ID,
@@ -195,10 +190,8 @@ fn magic_moment_hook_skips_dead_pid_active_room_file() {
 /// single-room prefix shape (no `<topic_short>` tag).
 #[test]
 fn routing_with_env_var_scopes_to_one_room() {
-    const TOPIC_A: &str =
-        "1111111111111111111111111111111111111111111111111111111111111111";
-    const TOPIC_B: &str =
-        "2222222222222222222222222222222222222222222222222222222222222222";
+    const TOPIC_A: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const TOPIC_B: &str = "2222222222222222222222222222222222222222222222222222222222222222";
     const ID_A: &str = "01HZA8K9F0RS3JXG7QZ4N5VTBA";
     const ID_B: &str = "01HZA8K9F0RS3JXG7QZ4N5VTBB";
     const BODY_A: &str = "from-room-A";
@@ -230,11 +223,7 @@ fn routing_with_env_var_scopes_to_one_room() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).expect("utf-8");
-    let expected_tail = format!(
-        "[chatroom @{} 00:00Z] {}\n",
-        &TEST_PUBKEY[..8],
-        BODY_A
-    );
+    let expected_tail = format!("[chatroom @{} 00:00Z] {}\n", &TEST_PUBKEY[..8], BODY_A);
     assert!(
         stdout.ends_with(&expected_tail),
         "CC_CONNECT_ROOM MUST scope to exactly one room with the single-room prefix; got: {stdout:?}"
@@ -252,10 +241,8 @@ fn routing_with_env_var_scopes_to_one_room() {
 /// blind to the chat substrate.
 #[test]
 fn routing_without_env_var_is_a_noop() {
-    const TOPIC_A: &str =
-        "3333333333333333333333333333333333333333333333333333333333333333";
-    const TOPIC_B: &str =
-        "4444444444444444444444444444444444444444444444444444444444444444";
+    const TOPIC_A: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+    const TOPIC_B: &str = "4444444444444444444444444444444444444444444444444444444444444444";
     const ID_A: &str = "01HZA8K9F0RS3JXG7QZ4N5VTAA";
     const ID_B: &str = "01HZA8K9F0RS3JXG7QZ4N5VTAB";
     const BODY_A: &str = "alpha-room-msg";

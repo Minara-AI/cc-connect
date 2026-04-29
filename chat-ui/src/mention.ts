@@ -82,21 +82,45 @@ export function completeAt(input: string, fullNick: string): string {
 }
 
 /** Body-content scan for @-mentions of the receiving user. Mirrors
- *  `cc_connect::chat_session::line_mentions_me` and
- *  `cc-connect-core::hook_format::mentions_self`. */
+ *  `cc-connect-core::hook_format::mentions_self`. The match is
+ *  word-boundary against nick-continuation chars (`[A-Za-z0-9_-]`), so
+ *  `@yj-cc 你好` does NOT register as a mention of `yj`. Keep this and
+ *  the Rust side in sync — see the `mentions_self_respects_word_boundary`
+ *  test in hook_format.rs. */
 export function bodyMentionsSelf(body: string, selfNick: string | null): boolean {
   const lower = body.toLowerCase();
-  if (
-    lower.includes("@cc") ||
-    lower.includes("@claude") ||
-    lower.includes("@all") ||
-    lower.includes("@here")
-  ) {
-    return true;
+  for (const tok of BROADCAST_TOKENS) {
+    if (matchAtToken(lower, tok)) return true;
   }
   if (selfNick && selfNick.length > 0) {
-    const token = `@${selfNick.toLowerCase()}`;
-    if (lower.includes(token)) return true;
+    if (matchAtToken(lower, selfNick.toLowerCase())) return true;
   }
+  // Note: deliberately NOT matching the AI mirror form `<selfNick>-cc`
+  // here. The Rust `mentions_self` does match it (so the for-you tag
+  // and `cc_wait_for_mention` wake the local claude), but for the
+  // chat-ui's `(@me)` red highlight the user's mental model is "@YJ-cc
+  // is addressed to a different entity than me." Highlighting your own
+  // outgoing `@<self>-cc` message as `(@me)` is jarring and incorrect
+  // from the user's perspective.
   return false;
+}
+
+/** Returns true iff `lower` contains `@<target>` where the character
+ *  immediately after the token is end-of-string or NOT a
+ *  nick-continuation character. `lower` and `target` MUST already be
+ *  lowercase. */
+function matchAtToken(lower: string, target: string): boolean {
+  const needle = `@${target}`;
+  let from = 0;
+  while (true) {
+    const i = lower.indexOf(needle, from);
+    if (i < 0) return false;
+    const next = lower.charAt(i + needle.length);
+    if (next === "" || !isNickCont(next)) return true;
+    from = i + 1;
+  }
+}
+
+function isNickCont(c: string): boolean {
+  return /[A-Za-z0-9_-]/.test(c);
 }

@@ -7,6 +7,7 @@
 //!   - 4-byte big-endian length prefix (BYTES of the JSON body)
 //!   - UTF-8 JSON body of exactly that length
 //!   - One request → one response → responder closes the stream.
+//!
 //! Both sides cap the length at 16 MiB and validate `v == 1`.
 
 use anyhow::{anyhow, Context, Result};
@@ -19,7 +20,7 @@ use iroh::{
 use iroh_blobs::store::mem::MemStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,11 +89,13 @@ impl ProtocolHandler for BackfillHandler {
     }
 }
 
-async fn handle_one(log_path: &PathBuf, connection: Connection) -> Result<()> {
+async fn handle_one(log_path: &Path, connection: Connection) -> Result<()> {
     let (mut send, mut recv) = connection.accept_bi().await.context("accept_bi")?;
 
     // Read length-prefixed request.
-    let body = read_length_prefixed(&mut recv).await.context("read request")?;
+    let body = read_length_prefixed(&mut recv)
+        .await
+        .context("read request")?;
     let request: BackfillRequest = serde_json::from_slice(&body).context("parse request")?;
 
     if request.v != PROTO_V {
@@ -103,8 +106,7 @@ async fn handle_one(log_path: &PathBuf, connection: Connection) -> Result<()> {
     // Read the log and produce the response set: messages with `id > since`,
     // ordered ascending, capped at `limit`.
     let mut log_file = log_io::open_or_create_log(log_path).context("open log")?;
-    let all = log_io::read_since(&mut log_file, request.since.as_deref())
-        .context("read_since")?;
+    let all = log_io::read_since(&mut log_file, request.since.as_deref()).context("read_since")?;
     // Server returns the FIRST (oldest) `limit` qualifying messages so the
     // joiner sees a contiguous prefix of unread history. PROTOCOL §6.2:
     // "responder MUST return all matching Messages up to limit".
@@ -148,8 +150,8 @@ pub async fn try_backfill_from(
     store: &MemStore,
     peer: &EndpointAddr,
     since: Option<String>,
-    log_path: &PathBuf,
-    files_dir: &PathBuf,
+    log_path: &Path,
+    files_dir: &Path,
 ) -> BackfillOutcome {
     match tokio::time::timeout(
         PER_ATTEMPT_TIMEOUT,
@@ -169,8 +171,8 @@ async fn attempt(
     store: &MemStore,
     peer: &EndpointAddr,
     since: Option<String>,
-    log_path: &PathBuf,
-    files_dir: &PathBuf,
+    log_path: &Path,
+    files_dir: &Path,
 ) -> Result<BackfillOutcome> {
     let connection = endpoint
         .connect(peer.clone(), BACKFILL_ALPN)
@@ -189,7 +191,9 @@ async fn attempt(
         .context("write request")?;
     send.finish().context("finish send stream")?;
 
-    let body = read_length_prefixed(&mut recv).await.context("read response")?;
+    let body = read_length_prefixed(&mut recv)
+        .await
+        .context("read response")?;
     let response: BackfillResponse = serde_json::from_slice(&body).context("parse response")?;
     if response.v != PROTO_V {
         return Err(anyhow!("VERSION_MISMATCH: response v={}", response.v));

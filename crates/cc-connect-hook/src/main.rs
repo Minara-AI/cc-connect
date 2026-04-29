@@ -5,9 +5,7 @@
 //! are written to `~/.cc-connect/hook.log` and silenced.
 
 use anyhow::{anyhow, Context, Result};
-use cc_connect_core::{
-    cursor_io, hook_format, identity::Identity, log_io, message::Message,
-};
+use cc_connect_core::{cursor_io, hook_format, identity::Identity, log_io, message::Message};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -166,7 +164,9 @@ fn read_session_id() -> Result<String> {
         .read_to_string(&mut buf)
         .context("read stdin")?;
     if buf.trim().is_empty() {
-        return Err(anyhow!("empty stdin — Claude Code did not pass session JSON"));
+        return Err(anyhow!(
+            "empty stdin — Claude Code did not pass session JSON"
+        ));
     }
     let parsed: StdinPayload = serde_json::from_str(&buf)
         .with_context(|| format!("parse stdin as JSON; got {} bytes", buf.len()))?;
@@ -201,8 +201,8 @@ fn enumerate_active_rooms(dir: &Path) -> Result<Vec<String>> {
 
     // PROTOCOL.md §8: refuse to operate if the parent directory is a
     // symlink or has loose permissions.
-    let parent_meta = std::fs::symlink_metadata(dir)
-        .with_context(|| format!("lstat {}", dir.display()))?;
+    let parent_meta =
+        std::fs::symlink_metadata(dir).with_context(|| format!("lstat {}", dir.display()))?;
     if parent_meta.file_type().is_symlink() {
         return Err(anyhow!("{} is a symlink — refusing", dir.display()));
     }
@@ -253,7 +253,7 @@ fn check_pid_alive(path: &Path) -> Result<bool> {
     let raw = std::fs::read_to_string(path)?;
     let pid_str = raw.trim();
     let pid: i32 = pid_str.parse().context("PID file content not an integer")?;
-    if pid < 100 || pid > i32::MAX {
+    if !(100..=i32::MAX).contains(&pid) {
         return Err(anyhow!("PID {pid} outside valid range [100, i32::MAX]"));
     }
     let pid_obj = match rustix::process::Pid::from_raw(pid) {
@@ -506,7 +506,10 @@ mod tests {
         let topics = vec!["a1b2c3d4e5f6".to_string()];
         let s = build_orientation_header(&topics, Some("alice"), false);
         assert!(s.contains("you (this Claude) = alice-cc"), "got:\n{s}");
-        assert!(!s.contains("you (this Claude) = alice\n"), "bare nick leaked: {s}");
+        assert!(
+            !s.contains("you (this Claude) = alice\n"),
+            "bare nick leaked: {s}"
+        );
     }
 
     /// When self_nick is unset the header still names the AI form.
@@ -523,11 +526,17 @@ mod tests {
     fn orientation_header_emits_for_you_directive() {
         let topics = vec!["a1b2c3d4e5f6".to_string()];
         let with = build_orientation_header(&topics, Some("alice"), true);
-        assert!(with.contains("MUST reply"), "expected reply directive: {with}");
+        assert!(
+            with.contains("MUST reply"),
+            "expected reply directive: {with}"
+        );
         assert!(with.contains("`for-you`"), "expected tag reference: {with}");
 
         let without = build_orientation_header(&topics, Some("alice"), false);
-        assert!(!without.contains("MUST reply"), "directive leaked: {without}");
+        assert!(
+            !without.contains("MUST reply"),
+            "directive leaked: {without}"
+        );
     }
 
     /// Trust boundary warning is always present when the header renders so
@@ -538,8 +547,14 @@ mod tests {
         let topics = vec!["a1b2c3d4e5f6".to_string()];
         let s = build_orientation_header(&topics, Some("alice"), false);
         assert!(s.contains("TRUST BOUNDARY"), "trust boundary missing: {s}");
-        assert!(s.contains("UNTRUSTED CONTENT"), "untrusted-content label missing: {s}");
+        assert!(
+            s.contains("UNTRUSTED CONTENT"),
+            "untrusted-content label missing: {s}"
+        );
         let with = build_orientation_header(&topics, Some("alice"), true);
-        assert!(with.contains("TRUST BOUNDARY"), "trust boundary missing in for-you mode: {with}");
+        assert!(
+            with.contains("TRUST BOUNDARY"),
+            "trust boundary missing in for-you mode: {with}"
+        );
     }
 }

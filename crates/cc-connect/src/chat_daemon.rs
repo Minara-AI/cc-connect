@@ -361,9 +361,8 @@ async fn daemon_async(ticket: &str, no_relay: bool, relay: Option<&str>) -> Resu
     }
 
     // Park on SIGTERM/SIGINT, OR on the chat session crashing.
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .context("install SIGTERM handler")?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("install SIGTERM handler")?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .context("install SIGINT handler")?;
     tokio::select! {
@@ -402,10 +401,9 @@ fn pid_file_path(topic_hex: &str) -> PathBuf {
 }
 
 fn read_pid_file(path: &Path) -> Result<ChatDaemonPidFile> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
-    let pf: ChatDaemonPidFile = serde_json::from_str(raw.trim())
-        .with_context(|| format!("parse {}", path.display()))?;
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let pf: ChatDaemonPidFile =
+        serde_json::from_str(raw.trim()).with_context(|| format!("parse {}", path.display()))?;
     Ok(pf)
 }
 
@@ -457,8 +455,8 @@ fn append_event(path: &Path, kind: &str, body: &str) -> Result<()> {
 }
 
 fn decode_topic_hex(ticket: &str) -> Result<String> {
-    let bytes = decode_room_code(ticket)
-        .with_context(|| format!("decode room code: {:.20}…", ticket))?;
+    let bytes =
+        decode_room_code(ticket).with_context(|| format!("decode room code: {:.20}…", ticket))?;
     let payload = TicketPayload::from_bytes(&bytes)?;
     let mut out = String::with_capacity(64);
     for b in payload.topic.as_bytes() {
@@ -537,7 +535,7 @@ mod tests {
     #[test]
     fn pid_alive_rejects_invalid_via_rustix() {
         // None branch
-        assert_eq!(rustix::process::Pid::from_raw(0).is_some(), false);
+        assert!(rustix::process::Pid::from_raw(0).is_none());
         // Init may be alive but we don't care — the test we care about is
         // that the helper returns false on PID-of-zero. PID 1 case left
         // as integration smoke.

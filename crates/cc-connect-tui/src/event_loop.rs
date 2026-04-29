@@ -16,13 +16,11 @@ use anyhow::{anyhow, Context, Result};
 use cc_connect::chat_session::DisplayLine;
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event as CtEvent, EventStream, KeyCode,
-        KeyEvent, KeyEventKind, KeyModifiers,
+        DisableMouseCapture, EnableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
+        KeyEventKind, KeyModifiers,
     },
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_lite::StreamExt;
 use portable_pty::PtySize;
@@ -118,10 +116,7 @@ pub async fn run(opts: RunOpts) -> Result<()> {
             "Share this ticket to invite peers:".to_string(),
         ),
     );
-    push_chat_to_active(
-        &mut app,
-        ChatLine::new(ChatLineKind::Marker, banner_ticket),
-    );
+    push_chat_to_active(&mut app, ChatLine::new(ChatLineKind::Marker, banner_ticket));
 
     // ---- Terminal init ----------------------------------------------------
     let _term_guard = TerminalGuard::enter()?;
@@ -139,7 +134,9 @@ pub async fn run(opts: RunOpts) -> Result<()> {
         // mutation) — re-applying every frame keeps the rendered view in
         // sync with `claude_scroll` without any other plumbing.
         if let Some(t) = app.tabs.active_tab_mut() {
-            t.vt_parser.screen_mut().set_scrollback(t.claude_scroll as usize);
+            t.vt_parser
+                .screen_mut()
+                .set_scrollback(t.claude_scroll as usize);
         }
         terminal.draw(|f| draw(f, &app)).context("draw")?;
         if app.should_exit || app.tabs.is_empty() {
@@ -199,7 +196,11 @@ fn apply_display_line(app: &mut App, tid: TabId, line: DisplayLine) {
     let line = match line {
         DisplayLine::System(s) => ChatLine::new(ChatLineKind::System, s),
         DisplayLine::Marker(s) => ChatLine::new(ChatLineKind::Marker, s),
-        DisplayLine::Incoming { nick_short, body, mentions_me } => {
+        DisplayLine::Incoming {
+            nick_short,
+            body,
+            mentions_me,
+        } => {
             let kind = if mentions_me {
                 ChatLineKind::IncomingMention
             } else {
@@ -274,10 +275,7 @@ async fn handle_key(
                                     format!("clipboard unreachable ({e}); reprinting below"),
                                 ),
                             );
-                            push_chat_to_active(
-                                app,
-                                ChatLine::new(ChatLineKind::Marker, ticket),
-                            );
+                            push_chat_to_active(app, ChatLine::new(ChatLineKind::Marker, ticket));
                         }
                     }
                 }
@@ -291,7 +289,7 @@ async fn handle_key(
     if key.modifiers.is_empty() {
         if let KeyCode::Char(c) = key.code {
             if let Some(d) = c.to_digit(10) {
-                if d >= 1 && d <= 9 && app.focus != Focus::Claude {
+                if (1..=9).contains(&d) && app.focus != Focus::Claude {
                     app.tabs.switch_to_index((d - 1) as usize);
                     return;
                 }
@@ -370,12 +368,8 @@ async fn handle_chat_key(app: &mut App, key: KeyEvent) {
     let popup_visible = !tab.mention_dismissed
         && crate::mention::current_at_token(&tab.input_buf)
             .map(|p| {
-                !crate::mention::mention_candidates(
-                    &tab.recent_nicks,
-                    p,
-                    self_nick.as_deref(),
-                )
-                .is_empty()
+                !crate::mention::mention_candidates(&tab.recent_nicks, p, self_nick.as_deref())
+                    .is_empty()
             })
             .unwrap_or(false);
 
@@ -416,25 +410,21 @@ async fn handle_chat_key(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        KeyCode::Enter => {
-            if !tab.input_buf.is_empty() {
-                let line = std::mem::take(&mut tab.input_buf);
-                tab.mention_idx = 0;
-                tab.mention_dismissed = false;
-                let _ = tab.chat_handle.input_tx.send(line).await;
-            }
+        KeyCode::Enter if !tab.input_buf.is_empty() => {
+            let line = std::mem::take(&mut tab.input_buf);
+            tab.mention_idx = 0;
+            tab.mention_dismissed = false;
+            let _ = tab.chat_handle.input_tx.send(line).await;
         }
         KeyCode::Backspace => {
             tab.input_buf.pop();
             tab.mention_idx = 0;
             tab.mention_dismissed = false;
         }
-        KeyCode::Char(c) => {
-            if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                tab.input_buf.push(c);
-                tab.mention_idx = 0;
-                tab.mention_dismissed = false;
-            }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tab.input_buf.push(c);
+            tab.mention_idx = 0;
+            tab.mention_dismissed = false;
         }
         _ => {}
     }
@@ -483,9 +473,13 @@ async fn handle_overlay_key(
                 let ticket = buf.trim().to_string();
                 if !ticket.is_empty() {
                     let id = app.tabs.alloc_id();
-                    let initial_pty_size = pane_size_for(current_terminal_size().unwrap_or(PtySize {
-                        rows: 30, cols: 120, pixel_width: 0, pixel_height: 0,
-                    }));
+                    let initial_pty_size =
+                        pane_size_for(current_terminal_size().unwrap_or(PtySize {
+                            rows: 30,
+                            cols: 120,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        }));
                     let args = SpawnTabArgs {
                         ticket,
                         no_relay,
@@ -502,15 +496,9 @@ async fn handle_overlay_key(
                             app.tabs.add(tab);
                             push_chat_to_active(
                                 app,
-                                ChatLine::new(
-                                    ChatLineKind::System,
-                                    format!("Joined room {topic}"),
-                                ),
+                                ChatLine::new(ChatLineKind::System, format!("Joined room {topic}")),
                             );
-                            push_chat_to_active(
-                                app,
-                                ChatLine::new(ChatLineKind::Marker, ticket),
-                            );
+                            push_chat_to_active(app, ChatLine::new(ChatLineKind::Marker, ticket));
                         }
                         Err(e) => {
                             next = Some(Overlay::Notice(format!("join failed: {e:#}")));
@@ -629,7 +617,12 @@ fn draw_tab_strip(f: &mut Frame, area: Rect, app: &App) {
             None => continue,
         };
         let active = app.tabs.active == Some(id);
-        let label = format!(" [{n}] {short}{tag} ", n = i + 1, short = tab.topic_short(), tag = if tab.hosting { "·H" } else { "" });
+        let label = format!(
+            " [{n}] {short}{tag} ",
+            n = i + 1,
+            short = tab.topic_short(),
+            tag = if tab.hosting { "·H" } else { "" }
+        );
         let style = if active {
             theme::tab_active()
         } else {
@@ -704,7 +697,7 @@ fn encode_key(key: KeyEvent) -> Vec<u8> {
         KeyCode::Char(c) => {
             if ctrl {
                 let lower = c.to_ascii_lowercase();
-                if ('a'..='z').contains(&lower) {
+                if lower.is_ascii_lowercase() {
                     buf.push((lower as u8) - b'a' + 1);
                 } else {
                     let mut tmp = [0u8; 4];

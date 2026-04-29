@@ -113,10 +113,10 @@ pub fn run_start(relay: Option<&str>) -> Result<()> {
         .strip_prefix("READY ")
         .ok_or_else(|| anyhow!("daemon error or unexpected line: {trimmed:?}"))?;
     let mut parts = rest.splitn(2, ' ');
-    let topic_hex = parts
+    let topic_hex = parts.next().ok_or_else(|| anyhow!("READY missing topic"))?;
+    let ticket = parts
         .next()
-        .ok_or_else(|| anyhow!("READY missing topic"))?;
-    let ticket = parts.next().ok_or_else(|| anyhow!("READY missing ticket"))?;
+        .ok_or_else(|| anyhow!("READY missing ticket"))?;
 
     println!();
     println!(
@@ -304,15 +304,14 @@ async fn daemon_async(relay: Option<&str>) -> Result<()> {
 
     let mut builder = Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key);
     if let Some(url) = relay {
-        let map = RelayMap::try_from_iter([url])
-            .map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
+        let map =
+            RelayMap::try_from_iter([url]).map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
         builder = builder.relay_mode(RelayMode::Custom(map));
     }
     let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 
     let mut topic_bytes = [0u8; 32];
-    getrandom::getrandom(&mut topic_bytes)
-        .map_err(|e| anyhow!("OS random for topic: {e}"))?;
+    getrandom::getrandom(&mut topic_bytes).map_err(|e| anyhow!("OS random for topic: {e}"))?;
     let topic = TopicId::from_bytes(topic_bytes);
 
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -398,8 +397,7 @@ fn pid_file_path(topic_hex: &str) -> PathBuf {
 }
 
 fn read_pid_file(path: &Path) -> Result<HostPidFile> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let pf: HostPidFile =
         serde_json::from_str(raw.trim()).with_context(|| format!("parse {}", path.display()))?;
     Ok(pf)

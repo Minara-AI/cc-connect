@@ -53,13 +53,9 @@ pub enum Overlay {
     /// "[j]oin existing  [h]ost new" picker for Ctrl-N.
     NewRoomPicker,
     /// Text input for a ticket on the join path.
-    JoinTicketPrompt {
-        buf: String,
-    },
+    JoinTicketPrompt { buf: String },
     /// "Stop the host daemon too? [y/N]" while closing a hosted tab.
-    ConfirmCloseHost {
-        topic_hex: String,
-    },
+    ConfirmCloseHost { topic_hex: String },
     /// Status / error popup with a message; dismiss with Esc.
     Notice(String),
 }

@@ -75,26 +75,11 @@ pub enum DisplayLine {
 
 /// Pure function: does `body` mention "me"?
 ///
-/// Recognised tokens (case-insensitive substring match):
-///   - `@<self_nick>` — only checked if `self_nick` is `Some` and non-empty.
-///   - `@cc`, `@claude` — addresses any/all Claude Code instances.
-///   - `@all`, `@here` — broadcast attention.
+/// Thin wrapper over `cc_connect_core::hook_format::mentions_self` so the
+/// listener and the hook agree on the same matcher (word-boundary against
+/// nick-continuation chars; see `mentions_self` for the rule).
 pub fn line_mentions_me(body: &str, self_nick: Option<&str>) -> bool {
-    let lower = body.to_ascii_lowercase();
-    if lower.contains("@cc")
-        || lower.contains("@claude")
-        || lower.contains("@all")
-        || lower.contains("@here")
-    {
-        return true;
-    }
-    if let Some(nick) = self_nick.filter(|s| !s.is_empty()) {
-        let token = format!("@{}", nick.to_ascii_lowercase());
-        if lower.contains(&token) {
-            return true;
-        }
-    }
-    false
+    cc_connect_core::hook_format::mentions_self(body, self_nick)
 }
 
 /// One @-mention event, surfaced by the gossip listener and consumable by
@@ -154,9 +139,7 @@ impl MentionState {
     fn snapshot_after(&self, cutoff: Option<&str>) -> Option<MentionEvent> {
         let cutoff = cutoff?;
         let buf = self.recent.lock().expect("mention buffer poisoned");
-        buf.iter()
-            .find(|e| e.id.as_str() > cutoff)
-            .cloned()
+        buf.iter().find(|e| e.id.as_str() > cutoff).cloned()
     }
 }
 
@@ -246,8 +229,8 @@ async fn run_session(
     if cfg.no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
     } else if let Some(url) = cfg.relay.as_deref() {
-        let map = RelayMap::try_from_iter([url])
-            .map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
+        let map =
+            RelayMap::try_from_iter([url]).map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
         builder = builder.relay_mode(RelayMode::Custom(map));
     }
     let endpoint = builder.bind().await.context("bind iroh endpoint")?;
@@ -281,15 +264,8 @@ async fn run_session(
             None
         } else {
             let files_dir = files_dir_for(&topic_id_hex);
-            match try_backfill_from(
-                &endpoint,
-                &store,
-                first_peer,
-                None,
-                &log_path,
-                &files_dir,
-            )
-            .await
+            match try_backfill_from(&endpoint, &store, first_peer, None, &log_path, &files_dir)
+                .await
             {
                 BackfillOutcome::Filled { appended } if appended > 0 => Some(format!(
                     "[chatroom] (backfilled {appended} message{} from peer)",
@@ -337,10 +313,7 @@ async fn run_session(
         }
     };
     let ipc_handle = if let Some(listener) = ipc_listener {
-        let _ = std::fs::set_permissions(
-            &ipc_sock,
-            std::fs::Permissions::from_mode(0o600),
-        );
+        let _ = std::fs::set_permissions(&ipc_sock, std::fs::Permissions::from_mode(0o600));
         let mcp_input_tx = mcp_input_tx.clone();
         let local_input_tx = local_input_tx.clone();
         let ipc_log_path = log_path.clone();
@@ -413,7 +386,9 @@ async fn run_session(
                 Ok(e) => e,
                 Err(e) => {
                     let _ = listener_display
-                        .send(DisplayLine::Warn(format!("[chat] gossip stream error: {e}")))
+                        .send(DisplayLine::Warn(format!(
+                            "[chat] gossip stream error: {e}"
+                        )))
                         .await;
                     continue;
                 }
@@ -426,7 +401,9 @@ async fn run_session(
                 Ok(m) => m,
                 Err(e) => {
                     let _ = listener_display
-                        .send(DisplayLine::Warn(format!("[chat] dropped malformed Message: {e}")))
+                        .send(DisplayLine::Warn(format!(
+                            "[chat] dropped malformed Message: {e}"
+                        )))
                         .await;
                     continue;
                 }
@@ -630,7 +607,9 @@ async fn run_session(
 
         if let Err(e) = log_io::append(&mut send_log, &msg) {
             let _ = display_tx
-                .send(DisplayLine::Warn(format!("[chat] append outgoing failed: {e:#}")))
+                .send(DisplayLine::Warn(format!(
+                    "[chat] append outgoing failed: {e:#}"
+                )))
                 .await;
             continue;
         }
@@ -769,8 +748,8 @@ async fn build_file_drop(
     topic_id_hex: &str,
 ) -> Result<Message> {
     let path = std::path::Path::new(path_str);
-    let abs_path = std::path::absolute(path)
-        .with_context(|| format!("absolute path of {path_str}"))?;
+    let abs_path =
+        std::path::absolute(path).with_context(|| format!("absolute path of {path_str}"))?;
     // Sensitive-path blocklist (SECURITY.md §"Mitigation today" /
     // §"Operating guidance"). Closes the credential-exfil prompt-inject
     // pivot; operators with a real need can opt out per process.
@@ -787,8 +766,8 @@ async fn build_file_drop(
             ));
         }
     }
-    let metadata = std::fs::metadata(&abs_path)
-        .with_context(|| format!("stat {}", abs_path.display()))?;
+    let metadata =
+        std::fs::metadata(&abs_path).with_context(|| format!("stat {}", abs_path.display()))?;
     let size = metadata.len();
     if size > cc_connect_core::message::FILE_DROP_MAX_BYTES {
         return Err(anyhow!(
@@ -822,8 +801,7 @@ async fn build_file_drop(
     .context("build file_drop Message")?;
 
     let files_dir = files_dir_for(topic_id_hex);
-    copy_local_to_files_dir(&msg, &abs_path, &files_dir)
-        .context("save local copy for hook")?;
+    copy_local_to_files_dir(&msg, &abs_path, &files_dir).context("save local copy for hook")?;
     Ok(msg)
 }
 
@@ -858,8 +836,8 @@ pub(crate) async fn fetch_and_export_blob(
         .blob_hash
         .as_deref()
         .ok_or_else(|| anyhow!("BLOB_HASH_MISSING for {}", msg.id))?;
-    let hash = Hash::from_str(hash_hex)
-        .map_err(|e| anyhow!("BLOB_HASH_PARSE: {hash_hex} ({e})"))?;
+    let hash =
+        Hash::from_str(hash_hex).map_err(|e| anyhow!("BLOB_HASH_PARSE: {hash_hex} ({e})"))?;
     let author_id = PublicKey::from_str(&msg.author)
         .map_err(|e| anyhow!("AUTHOR_PARSE: {} ({e})", msg.author))?;
 
@@ -890,8 +868,7 @@ fn pid_file_path(topic_id_hex: &str) -> Result<PathBuf> {
     let dir = std::env::temp_dir()
         .join(format!("cc-connect-{uid}"))
         .join("active-rooms");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("create_dir_all {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("create_dir_all {}", dir.display()))?;
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     Ok(dir.join(format!("{topic_id_hex}.active")))
 }
@@ -930,8 +907,7 @@ fn now_ms() -> i64 {
 fn ipc_socket_path(topic_id_hex: &str) -> Result<(PathBuf, PathBuf)> {
     let uid = rustix::process::geteuid().as_raw();
     let mut rand_buf = [0u8; 4];
-    getrandom::getrandom(&mut rand_buf)
-        .map_err(|e| anyhow!("OS rng for socket suffix: {e}"))?;
+    getrandom::getrandom(&mut rand_buf).map_err(|e| anyhow!("OS rng for socket suffix: {e}"))?;
     let mut rand_hex = String::with_capacity(8);
     for b in rand_buf {
         use std::fmt::Write as _;
@@ -1048,7 +1024,8 @@ async fn handle_ipc_client(
             &mention_state,
         )
         .await;
-        let mut out = serde_json::to_vec(&resp).unwrap_or_else(|_| b"{\"ok\":false,\"err\":\"encode\"}".to_vec());
+        let mut out = serde_json::to_vec(&resp)
+            .unwrap_or_else(|_| b"{\"ok\":false,\"err\":\"encode\"}".to_vec());
         out.push(b'\n');
         if write_half.write_all(&out).await.is_err() {
             return;
@@ -1334,8 +1311,7 @@ fn save_summary(room_dir: &Path, text: &str) -> Result<()> {
         payload.push(b'\n');
     }
     let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, &payload)
-        .with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::write(&tmp, &payload).with_context(|| format!("write {}", tmp.display()))?;
     let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("rename {} → {}", tmp.display(), path.display()))?;
@@ -1346,19 +1322,20 @@ fn list_files_in(files_dir: &Path, limit: usize) -> Result<Vec<serde_json::Value
     if !files_dir.exists() {
         return Ok(Vec::new());
     }
-    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(files_dir)?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let m = e.metadata().ok()?;
-            if !m.is_file() {
-                return None;
-            }
-            let mtime = m.modified().ok()?;
-            Some((mtime, e.path()))
-        })
-        .collect();
+    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+        std::fs::read_dir(files_dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                if !m.is_file() {
+                    return None;
+                }
+                let mtime = m.modified().ok()?;
+                Some((mtime, e.path()))
+            })
+            .collect();
     // Most recent first.
-    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
     entries.truncate(limit);
     Ok(entries
         .into_iter()
@@ -1447,8 +1424,12 @@ mod mention_state_tests {
     fn snapshot_skips_when_caught_up() {
         let st = MentionState::new();
         st.push(ev("01H0000000000000000000000A", "first"));
-        assert!(st.snapshot_after(Some("01H0000000000000000000000A")).is_none());
-        assert!(st.snapshot_after(Some("01H0000000000000000000000Z")).is_none());
+        assert!(st
+            .snapshot_after(Some("01H0000000000000000000000A"))
+            .is_none());
+        assert!(st
+            .snapshot_after(Some("01H0000000000000000000000Z"))
+            .is_none());
     }
 
     /// Push beyond capacity drops the oldest. Otherwise a noisy room would

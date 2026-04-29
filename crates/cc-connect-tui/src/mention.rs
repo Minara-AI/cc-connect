@@ -40,8 +40,8 @@ pub fn current_at_token(input: &str) -> Option<&str> {
 /// user's own AI peer (`<self_nick>-cc`, synthetic — never lands in
 /// `recent` because the listener filters own-pubkey messages) and finally
 /// the broadcast tokens.
-pub fn mention_candidates<'a>(
-    recent: &'a VecDeque<String>,
+pub fn mention_candidates(
+    recent: &VecDeque<String>,
     prefix: &str,
     self_nick: Option<&str>,
 ) -> Vec<String> {
@@ -160,7 +160,10 @@ mod tests {
     fn own_ai_synthetic_when_recent_empty() {
         let recent = nicks(&[]);
         let got = mention_candidates(&recent, "", Some("me"));
-        assert!(got.first().map(|s| s.as_str()) == Some("me-cc"), "got: {got:?}");
+        assert!(
+            got.first().map(|s| s.as_str()) == Some("me-cc"),
+            "got: {got:?}"
+        );
     }
 
     /// Synthetic own-AI candidate honours the in-progress prefix filter.
@@ -170,7 +173,10 @@ mod tests {
         let got = mention_candidates(&recent, "me", Some("Me"));
         assert_eq!(got, vec!["Me-cc".to_string()]);
         let got = mention_candidates(&recent, "zz", Some("Me"));
-        assert!(!got.iter().any(|s| s == "Me-cc"), "should not match: {got:?}");
+        assert!(
+            !got.iter().any(|s| s == "Me-cc"),
+            "should not match: {got:?}"
+        );
     }
 
     #[test]

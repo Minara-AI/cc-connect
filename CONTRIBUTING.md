@@ -17,7 +17,7 @@ That's it. The first build pulls the iroh stack and the vendored ed25519 patch (
 
 | Need              | Why                                                                  |
 | ----------------- | -------------------------------------------------------------------- |
-| Rust ≥ 1.75       | Workspace MSRV (`Cargo.toml` → `workspace.package.rust-version`)     |
+| Rust ≥ 1.79       | Workspace MSRV (`Cargo.toml` → `workspace.package.rust-version`)     |
 | `bun` ≥ 1.1       | Build chat-ui (only needed if you touch `chat-ui/`)                  |
 | `gh` CLI          | File issues / PRs                                                    |
 | zellij **or** tmux| Optional. `cc-connect room start` falls back to the embedded TUI.    |

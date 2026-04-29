@@ -73,17 +73,26 @@ fn main() -> Result<()> {
 
     rt.block_on(async move {
         match cli.cmd {
-            Cmd::Start { relay, nick, claude_args } => {
-                start(relay.as_deref(), nick.as_deref(), claude_args).await
-            }
-            Cmd::Join { ticket, relay, nick, claude_args } => {
-                join(&ticket, relay.as_deref(), nick.as_deref(), claude_args).await
-            }
+            Cmd::Start {
+                relay,
+                nick,
+                claude_args,
+            } => start(relay.as_deref(), nick.as_deref(), claude_args).await,
+            Cmd::Join {
+                ticket,
+                relay,
+                nick,
+                claude_args,
+            } => join(&ticket, relay.as_deref(), nick.as_deref(), claude_args).await,
         }
     })
 }
 
-async fn start(relay: Option<&str>, nick_override: Option<&str>, claude_args: Vec<String>) -> Result<()> {
+async fn start(
+    relay: Option<&str>,
+    nick_override: Option<&str>,
+    claude_args: Vec<String>,
+) -> Result<()> {
     // First-run wizard: hook + nick + relay choice. Prompts use plain
     // stdin/stdout BEFORE the alt-screen takes over, so they look normal.
     if let Err(e) = setup::ensure_hook_installed() {
@@ -103,7 +112,7 @@ async fn start(relay: Option<&str>, nick_override: Option<&str>, claude_args: Ve
     let exe = std::env::current_exe().context("current_exe")?;
     let cc_connect = exe
         .parent()
-        .and_then(|p| Some(p.join("cc-connect")))
+        .map(|p| p.join("cc-connect"))
         .ok_or_else(|| anyhow!("can't locate `cc-connect` binary next to cc-connect-tui"))?;
     if !cc_connect.exists() {
         return Err(anyhow!(
@@ -140,10 +149,21 @@ async fn start(relay: Option<&str>, nick_override: Option<&str>, claude_args: Ve
         .ok_or_else(|| anyhow!("host-bg start did not print a ticket; output was:\n{stdout}"))?;
     println!("[room] daemon started, joining…");
 
-    enter_tui(ticket, resolved_relay.as_deref(), claude_args, /* hosting */ true).await
+    enter_tui(
+        ticket,
+        resolved_relay.as_deref(),
+        claude_args,
+        /* hosting */ true,
+    )
+    .await
 }
 
-async fn join(ticket: &str, relay: Option<&str>, nick_override: Option<&str>, claude_args: Vec<String>) -> Result<()> {
+async fn join(
+    ticket: &str,
+    relay: Option<&str>,
+    nick_override: Option<&str>,
+    claude_args: Vec<String>,
+) -> Result<()> {
     if let Err(e) = setup::ensure_hook_installed() {
         eprintln!("(setup: hook check failed: {e:#})");
     }
@@ -153,7 +173,13 @@ async fn join(ticket: &str, relay: Option<&str>, nick_override: Option<&str>, cl
     if let Err(e) = setup::ensure_self_nick(nick_override) {
         eprintln!("(setup: nick prompt failed: {e:#})");
     }
-    enter_tui(ticket.to_string(), relay, claude_args, /* hosting */ false).await
+    enter_tui(
+        ticket.to_string(),
+        relay,
+        claude_args,
+        /* hosting */ false,
+    )
+    .await
 }
 
 async fn enter_tui(
@@ -184,7 +210,8 @@ async fn enter_tui(
 }
 
 fn topic_hex_from_ticket(ticket: &str) -> Result<String> {
-    let bytes = decode_room_code(ticket).with_context(|| format!("decode ticket: {ticket:.20}…"))?;
+    let bytes =
+        decode_room_code(ticket).with_context(|| format!("decode ticket: {ticket:.20}…"))?;
     let payload = TicketPayload::from_bytes(&bytes).context("parse ticket payload")?;
     let mut hex = String::with_capacity(64);
     for b in payload.topic.as_bytes() {
@@ -193,4 +220,3 @@ fn topic_hex_from_ticket(ticket: &str) -> Result<String> {
     }
     Ok(hex)
 }
-

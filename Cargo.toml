@@ -13,7 +13,7 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yijian/cc-connect"
-rust-version = "1.75"
+rust-version = "1.79"
 
 [workspace.dependencies]
 # stdlib companions

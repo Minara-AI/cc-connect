@@ -32,8 +32,8 @@ pub fn read_cursor(path: &Path) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read cursor {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("read cursor {}", path.display()))?;
     let trimmed = raw.trim_end_matches('\n').trim_end_matches('\r');
     if trimmed.is_empty() {
         return Ok(None);
@@ -116,8 +116,7 @@ fn open_cursor_rwc(path: &Path) -> Result<File> {
 /// file descriptor `file` is referring to. The comparison uses both `dev`
 /// and `ino` so we don't false-match across mounts.
 fn path_matches_fd(path: &Path, file: &File) -> Result<bool> {
-    let path_meta = std::fs::metadata(path)
-        .with_context(|| format!("stat {}", path.display()))?;
+    let path_meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
     let fd_meta = file.metadata().context("fstat held cursor fd")?;
     Ok(path_meta.dev() == fd_meta.dev() && path_meta.ino() == fd_meta.ino())
 }
@@ -172,7 +171,9 @@ fn create_unique_tmp(path: &Path) -> Result<(File, PathBuf)> {
             }
         }
     }
-    bail!("CURSOR_TMP_COLLISION: {ATTEMPTS} random suffixes all collided (improbable, investigate)");
+    bail!(
+        "CURSOR_TMP_COLLISION: {ATTEMPTS} random suffixes all collided (improbable, investigate)"
+    );
 }
 
 #[cfg(test)]
@@ -231,7 +232,11 @@ mod tests {
         let ulid = "01HZA8K9F0RS3JXG7QZ4N5VTBC";
         advance_cursor(&path, ulid).unwrap();
         let raw = std::fs::read(&path).unwrap();
-        assert_eq!(raw, ulid.as_bytes(), "cursor MUST be the bare ULID, no whitespace");
+        assert_eq!(
+            raw,
+            ulid.as_bytes(),
+            "cursor MUST be the bare ULID, no whitespace"
+        );
     }
 
     #[test]
@@ -280,11 +285,7 @@ mod tests {
     fn protocol_11_7_json_form_forward_compat() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("json.cursor");
-        std::fs::write(
-            &path,
-            br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC"}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC"}"#).unwrap();
         assert_eq!(
             read_cursor(&path).unwrap(),
             Some("01HZA8K9F0RS3JXG7QZ4N5VTBC".to_string())
@@ -296,11 +297,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.cursor");
         std::fs::write(&path, b"{not json").unwrap();
-        let err = read_cursor(&path).err().expect("malformed JSON must error");
-        assert!(
-            err.to_string().contains("CURSOR_PARSE_ERROR"),
-            "got: {err}"
-        );
+        let err = read_cursor(&path).expect_err("malformed JSON must error");
+        assert!(err.to_string().contains("CURSOR_PARSE_ERROR"), "got: {err}");
     }
 
     /// Concurrent advances MUST end with the file containing exactly one of
@@ -337,11 +335,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(parent)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .contains(".cursor.tmp.")
-            })
+            .filter(|e| e.file_name().to_string_lossy().contains(".cursor.tmp."))
             .map(|e| e.path())
             .collect();
         assert!(

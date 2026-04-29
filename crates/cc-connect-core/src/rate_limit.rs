@@ -52,7 +52,10 @@ impl RateLimiter {
     /// excess doesn't keep the window topped up).
     pub fn check_and_record(&mut self, author: &str, now_ms: i64) -> RateLimitDecision {
         let window = self.by_author.entry(author.to_string()).or_default();
-        while window.front().is_some_and(|t| now_ms - *t > RATE_LIMIT_WINDOW_MS) {
+        while window
+            .front()
+            .is_some_and(|t| now_ms - *t > RATE_LIMIT_WINDOW_MS)
+        {
             window.pop_front();
         }
         if window.len() >= RATE_LIMIT_MAX_PER_WINDOW {

@@ -162,8 +162,8 @@ impl Message {
     ///   4. Body cap.
     ///   5. ULID normalise.
     pub fn from_wire_bytes(bytes: &[u8]) -> Result<Self> {
-        let mut msg: Message = serde_json::from_slice(bytes)
-            .map_err(|e| anyhow!("PARSE_ERROR: {e}"))?;
+        let mut msg: Message =
+            serde_json::from_slice(bytes).map_err(|e| anyhow!("PARSE_ERROR: {e}"))?;
 
         if msg.v != PROTOCOL_VERSION {
             bail!(
@@ -227,7 +227,10 @@ fn validate_blob_hash(hash: &str) -> Result<()> {
             hash.len()
         );
     }
-    if !hash.bytes().all(|b| b.is_ascii_hexdigit() && (!b.is_ascii_alphabetic() || b.is_ascii_lowercase())) {
+    if !hash
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && (!b.is_ascii_alphabetic() || b.is_ascii_lowercase()))
+    {
         bail!("BLOB_HASH_INVALID: must be lowercase hex");
     }
     Ok(())
@@ -271,10 +274,31 @@ pub fn normalize_ulid(s: &str) -> Result<String> {
             'I' | 'i' | 'L' | 'l' => '1',
             'O' | 'o' => '0',
             'U' | 'u' => bail!("ULID_INVALID_CHAR: U/u reserved by Crockford normalisation"),
-            '0'..='9' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'J' | 'K'
-            | 'M' | 'N' | 'P' | 'Q' | 'R' | 'S' | 'T' | 'V' | 'W' | 'X' | 'Y' | 'Z' => c,
-            'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'j' | 'k' | 'm' | 'n'
-            | 'p' | 'q' | 'r' | 's' | 't' | 'v' | 'w' | 'x' | 'y' | 'z' => c.to_ascii_uppercase(),
+            '0'..='9'
+            | 'A'
+            | 'B'
+            | 'C'
+            | 'D'
+            | 'E'
+            | 'F'
+            | 'G'
+            | 'H'
+            | 'J'
+            | 'K'
+            | 'M'
+            | 'N'
+            | 'P'
+            | 'Q'
+            | 'R'
+            | 'S'
+            | 'T'
+            | 'V'
+            | 'W'
+            | 'X'
+            | 'Y'
+            | 'Z' => c,
+            'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'j' | 'k' | 'm' | 'n' | 'p' | 'q'
+            | 'r' | 's' | 't' | 'v' | 'w' | 'x' | 'y' | 'z' => c.to_ascii_uppercase(),
             other => bail!("ULID_INVALID_CHAR: {other:?} not in Crockford alphabet"),
         };
         out.push(mapped);
@@ -300,15 +324,23 @@ mod tests {
     /// PROTOCOL.md §11.2 main canonical encoding vector.
     #[test]
     fn protocol_11_2_canonical_encoding_byte_exact() {
-        let msg = Message::new(VEC_ULID, VEC_PUBKEY.to_string(), VEC_TS, VEC_BODY.to_string())
-            .expect("valid §11.2 inputs");
+        let msg = Message::new(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            VEC_BODY.to_string(),
+        )
+        .expect("valid §11.2 inputs");
         let bytes = msg.to_canonical_json().expect("canonical encode");
         let s = std::str::from_utf8(&bytes).expect("valid UTF-8");
 
         let expected = format!(
             r#"{{"v":1,"id":"{VEC_ULID}","author":"{VEC_PUBKEY}","ts":{VEC_TS},"body":"{VEC_BODY}"}}"#
         );
-        assert_eq!(s, expected, "§11.2 canonical encoding MUST match byte-for-byte");
+        assert_eq!(
+            s, expected,
+            "§11.2 canonical encoding MUST match byte-for-byte"
+        );
 
         // Length probe — emitted to PROTOCOL.md §11.2; spec author should
         // verify the published `Length: N bytes.` line matches this number.
@@ -341,12 +373,21 @@ mod tests {
 
         // Probe — print the actual encoded length so the spec author can
         // pin the right number into PROTOCOL.md §11.2.
-        eprintln!("edge body field length (incl surrounding quotes) = {}", expected_body_field.len());
+        eprintln!(
+            "edge body field length (incl surrounding quotes) = {}",
+            expected_body_field.len()
+        );
     }
 
     #[test]
     fn roundtrip_canonical() {
-        let original = Message::new(VEC_ULID, VEC_PUBKEY.to_string(), VEC_TS, VEC_BODY.to_string()).unwrap();
+        let original = Message::new(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            VEC_BODY.to_string(),
+        )
+        .unwrap();
         let bytes = original.to_canonical_json().unwrap();
         let parsed = Message::from_wire_bytes(&bytes).unwrap();
         assert_eq!(parsed, original);
@@ -355,7 +396,7 @@ mod tests {
     #[test]
     fn rejects_wrong_wire_version() {
         let bad = br#"{"v":2,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":""}"#;
-        let err = Message::from_wire_bytes(bad).err().expect("v=2 must be rejected");
+        let err = Message::from_wire_bytes(bad).expect_err("v=2 must be rejected");
         assert!(err.to_string().contains("VERSION_MISMATCH"), "got: {err}");
     }
 
@@ -364,13 +405,12 @@ mod tests {
         // "system" is reserved per PROTOCOL.md §10 but not yet supported by
         // v0.2-alpha (only chat + file_drop are accepted).
         let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"system"}"#;
-        let err = Message::from_wire_bytes(bad).err().expect("system kind must be rejected");
+        let err = Message::from_wire_bytes(bad).expect_err("system kind must be rejected");
         assert!(err.to_string().contains("UNKNOWN_KIND"), "got: {err}");
     }
 
     /// Valid 64-char lowercase hex BLAKE3 hash (zero-vector).
-    const VEC_BLOB_HASH: &str =
-        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
+    const VEC_BLOB_HASH: &str = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
 
     #[test]
     fn file_drop_kind_accepted_with_filename_hash_and_size() {
@@ -402,8 +442,7 @@ mod tests {
             VEC_BLOB_HASH.to_string(),
             1,
         )
-        .err()
-        .expect("path separator MUST be rejected");
+        .expect_err("path separator MUST be rejected");
         assert!(err.to_string().contains("FILENAME_INVALID"), "got: {err}");
     }
 
@@ -417,8 +456,7 @@ mod tests {
             VEC_BLOB_HASH.to_string(),
             FILE_DROP_MAX_BYTES + 1,
         )
-        .err()
-        .expect("oversize MUST be rejected");
+        .expect_err("oversize MUST be rejected");
         assert!(err.to_string().contains("BLOB_TOO_LARGE"), "got: {err}");
     }
 
@@ -432,8 +470,7 @@ mod tests {
             "deadbeef".to_string(),
             1,
         )
-        .err()
-        .expect("short hash rejected");
+        .expect_err("short hash rejected");
         assert!(err.to_string().contains("BLOB_HASH_INVALID"), "got: {err}");
 
         // uppercase hex not allowed (canonical lowercase)
@@ -446,15 +483,14 @@ mod tests {
             upper,
             1,
         )
-        .err()
-        .expect("uppercase hex rejected");
+        .expect_err("uppercase hex rejected");
         assert!(err.to_string().contains("BLOB_HASH_INVALID"), "got: {err}");
     }
 
     #[test]
     fn file_drop_missing_blob_hash_rejected_on_wire() {
         let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"f.bin","kind":"file_drop","blob_size":1}"#;
-        let err = Message::from_wire_bytes(bad).err().expect("missing hash rejected");
+        let err = Message::from_wire_bytes(bad).expect_err("missing hash rejected");
         assert!(err.to_string().contains("BLOB_HASH_MISSING"), "got: {err}");
     }
 
@@ -463,9 +499,7 @@ mod tests {
         let bad = format!(
             r#"{{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"f.bin","kind":"file_drop","blob_hash":"{VEC_BLOB_HASH}"}}"#,
         );
-        let err = Message::from_wire_bytes(bad.as_bytes())
-            .err()
-            .expect("missing size rejected");
+        let err = Message::from_wire_bytes(bad.as_bytes()).expect_err("missing size rejected");
         assert!(err.to_string().contains("BLOB_SIZE_MISSING"), "got: {err}");
     }
 
@@ -474,15 +508,19 @@ mod tests {
         let bad = format!(
             r#"{{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1,"body":"","kind":"file_drop","blob_hash":"{VEC_BLOB_HASH}","blob_size":1}}"#,
         );
-        let err = Message::from_wire_bytes(bad.as_bytes())
-            .err()
-            .expect("empty filename rejected");
+        let err = Message::from_wire_bytes(bad.as_bytes()).expect_err("empty filename rejected");
         assert!(err.to_string().contains("FILENAME_EMPTY"), "got: {err}");
     }
 
     #[test]
     fn chat_message_has_no_blob_fields_in_canonical_form() {
-        let msg = Message::new(VEC_ULID, VEC_PUBKEY.to_string(), VEC_TS, VEC_BODY.to_string()).unwrap();
+        let msg = Message::new(
+            VEC_ULID,
+            VEC_PUBKEY.to_string(),
+            VEC_TS,
+            VEC_BODY.to_string(),
+        )
+        .unwrap();
         let s = String::from_utf8(msg.to_canonical_json().unwrap()).unwrap();
         assert!(
             !s.contains("blob_hash") && !s.contains("blob_size"),
@@ -508,7 +546,7 @@ mod tests {
     fn rejects_oversized_body() {
         let body = "x".repeat(BODY_MAX_BYTES + 1);
         let r = Message::new(VEC_ULID, VEC_PUBKEY.to_string(), VEC_TS, body);
-        let err = r.err().expect("oversized body must be rejected");
+        let err = r.expect_err("oversized body must be rejected");
         assert!(err.to_string().contains("BODY_TOO_LARGE"), "got: {err}");
     }
 
@@ -546,14 +584,14 @@ mod tests {
     fn ulid_rejects_u_and_u_lower() {
         // Crockford reserves U/u; PROTOCOL.md §4 says reject.
         let bad = "01HZA8K9F0RS3JXG7QZ4N5VTBU";
-        let err = normalize_ulid(bad).err().expect("U must be rejected");
+        let err = normalize_ulid(bad).expect_err("U must be rejected");
         assert!(err.to_string().contains("U"), "got: {err}");
     }
 
     #[test]
     fn ulid_rejects_wrong_length() {
         let too_short = "01HZA8K9F";
-        let err = normalize_ulid(too_short).err().expect("short ULID rejected");
+        let err = normalize_ulid(too_short).expect_err("short ULID rejected");
         assert!(err.to_string().contains("ULID_LENGTH"), "got: {err}");
     }
 
@@ -575,10 +613,11 @@ mod tests {
     /// `ts` MUST be an integer literal; reject scientific-notation forms.
     #[test]
     fn rejects_exponent_ts() {
-        let bad = br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1.7e12,"body":""}"#;
+        let bad =
+            br#"{"v":1,"id":"01HZA8K9F0RS3JXG7QZ4N5VTBC","author":"x","ts":1.7e12,"body":""}"#;
         // serde_json will fail to deserialise i64 from a float — that's the
         // canonical-encoding-only stance in §4. We accept the parse error.
-        let err = Message::from_wire_bytes(bad).err().expect("exponent ts rejected");
+        let err = Message::from_wire_bytes(bad).expect_err("exponent ts rejected");
         assert!(err.to_string().contains("PARSE_ERROR"), "got: {err}");
     }
 }

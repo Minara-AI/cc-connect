@@ -63,7 +63,9 @@ impl Report {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn check_identity(report: &mut Report) {
@@ -83,15 +85,10 @@ fn check_identity(report: &mut Report) {
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            report.info(&format!(
-                "identity.key not yet created — `cc-connect host` or `chat` will create it on first run"
-            ));
+            report.info("identity.key not yet created — `cc-connect host` or `chat` will create it on first run");
         }
         Err(e) => {
-            report.fail(&format!(
-                "could not stat {}: {e}",
-                path.display()
-            ));
+            report.fail(&format!("could not stat {}: {e}", path.display()));
         }
     }
 }
@@ -109,7 +106,9 @@ fn check_active_rooms_dir(report: &mut Report) {
                     "{} is a symlink — refuse to operate (potential snoop). \
                      Recover with: rm -rf {}",
                     dir.display(),
-                    dir.parent().map(|p| p.display().to_string()).unwrap_or_default()
+                    dir.parent()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
                 ));
                 return;
             }
@@ -170,9 +169,7 @@ fn check_settings_json_hook(report: &mut Report) {
     let hooks = match parsed.get("hooks").and_then(|h| h.get("UserPromptSubmit")) {
         Some(v) => v,
         None => {
-            report.warn(&format!(
-                "settings.json has no hooks.UserPromptSubmit — cc-connect-hook is not wired into Claude Code"
-            ));
+            report.warn("settings.json has no hooks.UserPromptSubmit — cc-connect-hook is not wired into Claude Code");
             return;
         }
     };
@@ -212,9 +209,9 @@ fn check_settings_json_hook(report: &mut Report) {
     let cmd = match found_command {
         Some(c) => c,
         None => {
-            report.warn(&format!(
-                "no UserPromptSubmit hook entry mentions cc-connect-hook — install it per README"
-            ));
+            report.warn(
+                "no UserPromptSubmit hook entry mentions cc-connect-hook — install it per README",
+            );
             return;
         }
     };
@@ -240,7 +237,10 @@ fn check_settings_json_hook(report: &mut Report) {
         Ok(meta) => {
             let mode = meta.permissions().mode();
             if mode & 0o111 != 0 {
-                report.ok(&format!("hook binary {} exists and is executable", p.display()));
+                report.ok(&format!(
+                    "hook binary {} exists and is executable",
+                    p.display()
+                ));
             } else {
                 report.fail(&format!("{} exists but is not executable", p.display()));
             }
@@ -349,7 +349,7 @@ mod tests {
         // Just exercises the helper. We can't easily stub HOME in a test,
         // but this ensures the function doesn't panic.
         let h = home_dir();
-        assert!(h.is_absolute() || h == PathBuf::from("/"));
+        assert!(h.is_absolute() || h == Path::new("/"));
     }
 
     #[test]

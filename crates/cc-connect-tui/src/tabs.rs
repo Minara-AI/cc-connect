@@ -149,8 +149,8 @@ pub struct TabIo {
 /// PTY bytes → fan-in mpsc), return the assembled `RoomTab`.
 pub async fn spawn_tab(id: TabId, args: SpawnTabArgs, io: &TabIo) -> Result<RoomTab> {
     // Topic from ticket — re-decode locally so the caller doesn't have to.
-    let payload_bytes =
-        decode_room_code(&args.ticket).with_context(|| format!("decode ticket {:.20}…", args.ticket))?;
+    let payload_bytes = decode_room_code(&args.ticket)
+        .with_context(|| format!("decode ticket {:.20}…", args.ticket))?;
     let payload = TicketPayload::from_bytes(&payload_bytes)?;
     let topic_hex = topic_to_hex(payload.topic.as_bytes());
 
@@ -235,11 +235,7 @@ pub async fn spawn_tab(id: TabId, args: SpawnTabArgs, io: &TabIo) -> Result<Room
         // long claude session, small enough to not balloon memory across
         // many tabs. Without this (the previous `0`) `set_scrollback`
         // had nothing to show, which is why the pane refused to scroll.
-        vt_parser: vt100::Parser::new(
-            args.initial_pty_size.rows,
-            args.initial_pty_size.cols,
-            5000,
-        ),
+        vt_parser: vt100::Parser::new(args.initial_pty_size.rows, args.initial_pty_size.cols, 5000),
         chat_lines: VecDeque::new(),
         chat_scroll: 0,
         claude_scroll: 0,

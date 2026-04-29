@@ -73,4 +73,27 @@ describe("bodyMentionsSelf", () => {
     expect(bodyMentionsSelf("@alice", null)).toBe(false);
     expect(bodyMentionsSelf("@alice", "")).toBe(false);
   });
+
+  test("respects_word_boundary", () => {
+    // The user's reported bug: typing `@yj-cc` on YJ's UI MUST NOT
+    // light up `(@me)`. Per the user's mental model, YJ-cc is a
+    // different entity from YJ even though they share a machine.
+    expect(bodyMentionsSelf("@yj-cc 你好", "yj")).toBe(false);
+    // Same body IS a mention of `yj-cc` if that's the perceived self.
+    expect(bodyMentionsSelf("@yj-cc 你好", "yj-cc")).toBe(true);
+    // Broadcast: `@cc-bot` is NOT a mention of broadcast `cc`.
+    expect(bodyMentionsSelf("@cc-bot ping", null)).toBe(false);
+    // Broadcast: `@cc!` IS — `!` is not a nick-continuation char.
+    expect(bodyMentionsSelf("ping @cc!", null)).toBe(true);
+    // End-of-string boundary still counts.
+    expect(bodyMentionsSelf("over to @cc", null)).toBe(true);
+    // `_` is a nick-continuation char — `@alice_2` is NOT mention of `alice`.
+    expect(bodyMentionsSelf("@alice_2 hi", "alice")).toBe(false);
+    expect(bodyMentionsSelf("@alice_2 hi", "alice_2")).toBe(true);
+    // The Rust `mentions_self` matches `@<nick>-cc` (AI mirror form);
+    // the UI deliberately does not — assert that divergence here so a
+    // future refactor doesn't quietly re-couple them. See the comment
+    // at the bottom of `bodyMentionsSelf` for the rationale.
+    expect(bodyMentionsSelf("@bob-cc thing", "bob")).toBe(false);
+  });
 });

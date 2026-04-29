@@ -120,7 +120,6 @@ pub fn read_since(file: &mut File, cursor: Option<&str>) -> Result<Vec<Message>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use std::sync::Arc;
 
     fn make_msg(id: &str, body: &str) -> Message {

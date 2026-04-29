@@ -81,10 +81,7 @@ async fn handle_message(raw: &str) -> Result<Option<Value>> {
                 }
             }),
         ))),
-        "tools/list" => Ok(Some(success(
-            id,
-            json!({ "tools": tool_definitions() }),
-        ))),
+        "tools/list" => Ok(Some(success(id, json!({ "tools": tool_definitions() })))),
         "tools/call" => {
             let params = req.get("params").cloned().unwrap_or(json!({}));
             let tool_name = params
@@ -223,10 +220,7 @@ async fn call_tool(name: &str, args: Value) -> Result<String> {
         "cc_recent" => {
             let limit = args.get("limit").and_then(|x| x.as_u64()).unwrap_or(20);
             let resp = ipc_call(json!({"action": "recent", "limit": limit})).await?;
-            let messages = resp
-                .get("messages")
-                .cloned()
-                .unwrap_or_else(|| json!([]));
+            let messages = resp.get("messages").cloned().unwrap_or_else(|| json!([]));
             Ok(format!(
                 "recent ({}):\n{}",
                 messages.as_array().map(|a| a.len()).unwrap_or(0),
@@ -353,8 +347,8 @@ fn ipc_socket_path() -> Result<PathBuf> {
             marker.display()
         );
     }
-    let raw = std::fs::read_to_string(&marker)
-        .with_context(|| format!("read {}", marker.display()))?;
+    let raw =
+        std::fs::read_to_string(&marker).with_context(|| format!("read {}", marker.display()))?;
     Ok(PathBuf::from(raw.trim()))
 }
 

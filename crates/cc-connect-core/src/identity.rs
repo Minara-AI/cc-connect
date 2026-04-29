@@ -36,10 +36,9 @@ impl Identity {
 
     fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        let seed: [u8; SEED_LEN] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("expected exactly {SEED_LEN} bytes in {}", path.display()))?;
+        let seed: [u8; SEED_LEN] = bytes.as_slice().try_into().map_err(|_| {
+            anyhow::anyhow!("expected exactly {SEED_LEN} bytes in {}", path.display())
+        })?;
         Ok(Self::from_seed(seed))
     }
 
@@ -48,8 +47,8 @@ impl Identity {
         getrandom::getrandom(&mut seed)
             .map_err(|e| anyhow::anyhow!("OS random source failed: {e}"))?;
 
-        let mut file = open_create_0600(path)
-            .with_context(|| format!("create {}", path.display()))?;
+        let mut file =
+            open_create_0600(path).with_context(|| format!("create {}", path.display()))?;
         file.write_all(&seed)?;
         file.sync_all()?;
 
@@ -119,8 +118,7 @@ mod tests {
 
         let pubkey_hex = data_encoding::HEXLOWER.encode(&id.pubkey_bytes());
         assert_eq!(
-            pubkey_hex,
-            "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+            pubkey_hex, "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
             "PROTOCOL.md §11.1 says zero-seed pubkey hex MUST be this exact string"
         );
 
@@ -131,8 +129,7 @@ mod tests {
             "32 raw bytes → 52 base32-no-pad chars"
         );
         assert_eq!(
-            pubkey_b32,
-            "hnvcppgow2sc2yvdvdicu3ynonsteflxdxrehjr2ybekdc2z3iuq",
+            pubkey_b32, "hnvcppgow2sc2yvdvdicu3ynonsteflxdxrehjr2ybekdc2z3iuq",
             "PROTOCOL.md §11.1 says zero-seed pubkey base32 MUST be this exact string"
         );
     }
@@ -147,7 +144,10 @@ mod tests {
         let _id = Identity::generate_or_load(&key_path).unwrap();
 
         let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "PROTOCOL.md §2 requires file mode 0600 on creation");
+        assert_eq!(
+            mode, 0o600,
+            "PROTOCOL.md §2 requires file mode 0600 on creation"
+        );
     }
 
     #[test]

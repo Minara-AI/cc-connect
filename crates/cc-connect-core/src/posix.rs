@@ -41,6 +41,5 @@ pub(crate) fn acquire_lock(file: &File, kind: LockKind) -> Result<()> {
 /// file is a no-op.
 pub(crate) fn release_lock(file: &File) -> Result<()> {
     use rustix::fs::{fcntl_lock, FlockOperation};
-    fcntl_lock(file.as_fd(), FlockOperation::Unlock)
-        .map_err(|e| anyhow!("fcntl lock release: {e}"))
+    fcntl_lock(file.as_fd(), FlockOperation::Unlock).map_err(|e| anyhow!("fcntl lock release: {e}"))
 }

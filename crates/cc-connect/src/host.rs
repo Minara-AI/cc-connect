@@ -14,7 +14,10 @@
 use anyhow::{anyhow, Context, Result};
 use cc_connect_core::{identity::Identity, ticket::encode_room_code};
 use iroh::{endpoint::RelayMode, Endpoint, RelayMap, SecretKey};
-use iroh_gossip::{net::{Gossip, GOSSIP_ALPN}, proto::TopicId};
+use iroh_gossip::{
+    net::{Gossip, GOSSIP_ALPN},
+    proto::TopicId,
+};
 use std::path::PathBuf;
 
 use crate::ticket_payload::TicketPayload;
@@ -38,8 +41,8 @@ async fn run_async(no_relay: bool, relay: Option<&str>) -> Result<()> {
     if no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
     } else if let Some(url) = relay {
-        let map = RelayMap::try_from_iter([url])
-            .map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
+        let map =
+            RelayMap::try_from_iter([url]).map_err(|e| anyhow!("RELAY_URL_INVALID: {url}: {e}"))?;
         builder = builder.relay_mode(RelayMode::Custom(map));
     }
     let endpoint = builder.bind().await.context("bind iroh endpoint")?;

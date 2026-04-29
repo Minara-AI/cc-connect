@@ -184,16 +184,23 @@ pub enum HostBgCmd {
 pub fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
         Command::Host { no_relay, relay } => host::run(no_relay, relay.as_deref()),
-        Command::Chat { ticket, no_relay, relay } => {
-            chat::run(&ticket, no_relay, relay.as_deref())
-        }
+        Command::Chat {
+            ticket,
+            no_relay,
+            relay,
+        } => chat::run(&ticket, no_relay, relay.as_deref()),
         Command::Room { cmd } => match cmd {
-            RoomCmd::Start { relay, nick, claude_args } => {
-                room::run_start(relay.as_deref(), nick.as_deref(), &claude_args)
-            }
-            RoomCmd::Join { ticket, relay, nick, claude_args } => {
-                room::run_join(&ticket, relay.as_deref(), nick.as_deref(), &claude_args)
-            }
+            RoomCmd::Start {
+                relay,
+                nick,
+                claude_args,
+            } => room::run_start(relay.as_deref(), nick.as_deref(), &claude_args),
+            RoomCmd::Join {
+                ticket,
+                relay,
+                nick,
+                claude_args,
+            } => room::run_join(&ticket, relay.as_deref(), nick.as_deref(), &claude_args),
         },
         Command::HostBg { cmd } => match cmd {
             HostBgCmd::Start { relay } => host_bg::run_start(relay.as_deref()),
@@ -202,15 +209,19 @@ pub fn run(cli: Cli) -> Result<()> {
         },
         Command::HostBgDaemon { relay } => host_bg::run_daemon(relay.as_deref()),
         Command::ChatDaemon { cmd } => match cmd {
-            ChatDaemonCmd::Start { ticket, no_relay, relay } => {
-                chat_daemon::run_start(&ticket, no_relay, relay.as_deref())
-            }
+            ChatDaemonCmd::Start {
+                ticket,
+                no_relay,
+                relay,
+            } => chat_daemon::run_start(&ticket, no_relay, relay.as_deref()),
             ChatDaemonCmd::Stop { topic } => chat_daemon::run_stop(&topic),
             ChatDaemonCmd::List => chat_daemon::run_list(),
         },
-        Command::ChatDaemonDaemon { ticket, no_relay, relay } => {
-            chat_daemon::run_daemon(&ticket, no_relay, relay.as_deref())
-        }
+        Command::ChatDaemonDaemon {
+            ticket,
+            no_relay,
+            relay,
+        } => chat_daemon::run_daemon(&ticket, no_relay, relay.as_deref()),
         Command::Doctor => doctor::run(),
     }
 }

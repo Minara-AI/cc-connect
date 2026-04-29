@@ -117,8 +117,12 @@ mod tests {
         ];
         for input in inputs {
             let code = encode_room_code(input);
-            assert!(code.starts_with(ROOM_CODE_PREFIX), "missing prefix in {code}");
-            let decoded = decode_room_code(&code).unwrap_or_else(|e| panic!("decode failed for {input:?}: {e}"));
+            assert!(
+                code.starts_with(ROOM_CODE_PREFIX),
+                "missing prefix in {code}"
+            );
+            let decoded = decode_room_code(&code)
+                .unwrap_or_else(|e| panic!("decode failed for {input:?}: {e}"));
             assert_eq!(decoded, *input);
         }
     }
@@ -148,7 +152,9 @@ mod tests {
     #[test]
     fn rejects_wrong_prefix_case() {
         // Per §3 step 1: prefix is case-sensitive lowercase.
-        let inner = encode_room_code(b"hello").trim_start_matches(ROOM_CODE_PREFIX).to_string();
+        let inner = encode_room_code(b"hello")
+            .trim_start_matches(ROOM_CODE_PREFIX)
+            .to_string();
         let mixed = format!("CC1-{inner}");
         let err = decode_room_code(&mixed).unwrap_err();
         assert!(err.to_string().contains("INVALID_PREFIX"), "got: {err}");
@@ -191,7 +197,8 @@ mod tests {
         code.push(new_last);
         let err = decode_room_code(&code).unwrap_err();
         assert!(
-            err.to_string().contains("CHECKSUM_MISMATCH") || err.to_string().contains("BASE32_ERROR"),
+            err.to_string().contains("CHECKSUM_MISMATCH")
+                || err.to_string().contains("BASE32_ERROR"),
             "got: {err}"
         );
     }

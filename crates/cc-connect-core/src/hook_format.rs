@@ -104,7 +104,11 @@ pub fn render(input: &HookInput) -> String {
                 let header = if multi_room {
                     format!(
                         "[cc-connect summary {}]",
-                        topic.chars().take(6).collect::<String>().to_ascii_lowercase()
+                        topic
+                            .chars()
+                            .take(6)
+                            .collect::<String>()
+                            .to_ascii_lowercase()
                     )
                 } else {
                     "[cc-connect summary]".to_string()
@@ -124,7 +128,11 @@ pub fn render(input: &HookInput) -> String {
                 let header = if multi_room {
                     format!(
                         "[cc-connect files {}]",
-                        topic.chars().take(6).collect::<String>().to_ascii_lowercase()
+                        topic
+                            .chars()
+                            .take(6)
+                            .collect::<String>()
+                            .to_ascii_lowercase()
                     )
                 } else {
                     "[cc-connect files]".to_string()
@@ -210,7 +218,11 @@ fn format_line(
     let mention = is_owner_directive(msg, self_pubkey, self_nick);
     let mention_tag = if mention { "for-you " } else { "" };
     let prefix = if multi_room {
-        let tag = topic.chars().take(6).collect::<String>().to_ascii_lowercase();
+        let tag = topic
+            .chars()
+            .take(6)
+            .collect::<String>()
+            .to_ascii_lowercase();
         format!("[chatroom {mention_tag}{tag} @{nick} {time}Z]")
     } else {
         format!("[chatroom {mention_tag}@{nick} {time}Z]")
@@ -225,7 +237,10 @@ fn format_line(
             .join(topic)
             .join("files")
             .join(format!("{}-{}", msg.id, filename));
-        format!("{prefix} dropped {filename} @file:{}\n", local_path.display())
+        format!(
+            "{prefix} dropped {filename} @file:{}\n",
+            local_path.display()
+        )
     } else {
         let body = sanitize_body(&msg.body);
         format!("{prefix} {body}\n")
@@ -278,25 +293,72 @@ pub fn is_owner_directive(
 
 /// Body-content scan for @-mentions of the receiving user.
 ///
-/// Tokens (case-insensitive substring): `@<self_nick>`, `@cc`, `@claude`,
-/// `@all`, `@here`. Same set as `cc_connect::chat_session::line_mentions_me`
-/// — duplicated here to avoid a cc-connect-core → cc-connect dependency.
+/// Tokens (case-insensitive, **word-boundary** match): `@<self_nick>`, `@cc`,
+/// `@claude`, `@all`, `@here`. Same set as
+/// `cc_connect::chat_session::line_mentions_me` — duplicated here to avoid a
+/// cc-connect-core → cc-connect dependency.
+///
+/// "Word-boundary" means the character immediately after the token (if any)
+/// must not be a nick-continuation char (`[A-Za-z0-9_-]`). Without this,
+/// `@yj` would falsely match the body `@yj-cc hi`, treating a message
+/// addressed to `yj-cc` as a mention of `yj`. Pre-1.0 fix; see test
+/// `mentions_self_respects_word_boundary`.
 pub fn mentions_self(body: &str, self_nick: Option<&str>) -> bool {
     let lower = body.to_ascii_lowercase();
-    if lower.contains("@cc")
-        || lower.contains("@claude")
-        || lower.contains("@all")
-        || lower.contains("@here")
-    {
-        return true;
-    }
-    if let Some(nick) = self_nick.filter(|s| !s.is_empty()) {
-        let token = format!("@{}", nick.to_ascii_lowercase());
-        if lower.contains(&token) {
+    for tok in ["cc", "claude", "all", "here"] {
+        if match_at_token(&lower, tok) {
             return true;
         }
     }
+    if let Some(nick) = self_nick.filter(|s| !s.is_empty()) {
+        let lower_nick = nick.to_ascii_lowercase();
+        if match_at_token(&lower, &lower_nick) {
+            return true;
+        }
+        // One claude session represents both the human ("bob") and the
+        // AI mirror ("bob-cc") on the same machine — see chat-ui's
+        // `mentionCandidates` (synthetic `<self>-cc` candidate). So the
+        // human's hook (self_nick="bob") MUST also treat `@bob-cc` as a
+        // mention of self. Skip the synthesis when the nick is already
+        // the AI form to avoid the useless `bob-cc-cc` token.
+        if !lower_nick.ends_with("-cc") {
+            let ai_form = format!("{lower_nick}-cc");
+            if match_at_token(&lower, &ai_form) {
+                return true;
+            }
+        }
+    }
     false
+}
+
+/// Returns true if `lower` contains `@<target>` where the byte right after
+/// the token is either end-of-string or not a nick-continuation character.
+/// `lower` and `target` must already be ASCII-lowercased; targets are
+/// always ASCII (broadcast tokens or sanitized nicks per
+/// PROTOCOL.md §7.3 step 5), so byte-level scanning is safe.
+fn match_at_token(lower: &str, target: &str) -> bool {
+    let needle_len = 1 + target.len();
+    let bytes = lower.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = find_at_target(&lower[from..], target) {
+        let abs = from + rel;
+        let after = abs + needle_len;
+        match bytes.get(after).copied() {
+            None => return true,
+            Some(b) if !is_nick_cont_byte(b) => return true,
+            _ => from = abs + 1,
+        }
+    }
+    false
+}
+
+fn find_at_target(haystack: &str, target: &str) -> Option<usize> {
+    let needle = format!("@{target}");
+    haystack.find(&needle)
+}
+
+fn is_nick_cont_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
 /// Pick a display name for a Message. Precedence:
@@ -316,17 +378,10 @@ fn nick_for(nicknames: &HashMap<String, String>, msg: &Message) -> String {
 }
 
 fn pubkey_prefix(author: &str) -> &str {
-    let mut end = 0;
-    let mut count = 0;
-    for (i, _) in author.char_indices() {
-        if count == 8 {
-            return &author[..i];
-        }
-        count += 1;
-        end = i;
-    }
-    let _ = end;
     author
+        .char_indices()
+        .nth(8)
+        .map_or(author, |(i, _)| &author[..i])
 }
 
 /// Per PROTOCOL §7.3 step 5: replace `\n`, `\r`, `\t`, and any byte outside
@@ -411,7 +466,10 @@ mod tests {
     const B_PUBKEY: &str = "00000000000000000000000000000000000000000000000000bb";
 
     fn nicks(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn empty_map() -> &'static HashMap<String, String> {
@@ -431,7 +489,15 @@ mod tests {
     fn empty_rooms_renders_empty_string() {
         let nm = nicks(&[]);
         let rooms = HashMap::new();
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert_eq!(out, "");
     }
 
@@ -439,7 +505,15 @@ mod tests {
     fn single_room_no_messages_renders_empty() {
         let nm = nicks(&[]);
         let rooms = one_room("a1b2c3d4e5f6", vec![]);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert_eq!(out, "");
     }
 
@@ -454,7 +528,15 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "alice")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "hi")];
         let rooms = one_room("a1b2c3d4e5f6", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert_eq!(out, "[chatroom @alice 00:00Z] hi\n");
     }
 
@@ -463,7 +545,15 @@ mod tests {
         let nm = nicks(&[]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "x")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert_eq!(out, "[chatroom @hnvcppgo 00:00Z] x\n");
     }
 
@@ -473,7 +563,15 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, bad_nick)]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "x")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         // \n→?, \t→?, é (2 bytes 0xc3 0xa9) → 2× '?' per byte-for-byte rule.
         assert!(out.contains("@al?ice???"), "got: {out}");
     }
@@ -484,7 +582,15 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "x")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, body_raw)];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert!(
             out.contains("a b c é d"),
             "tab+DEL→space, é preserved: got {out}"
@@ -517,9 +623,16 @@ mod tests {
             "bbbbbb222222".to_string(),
             vec![make(&ulid(2), B_PUBKEY, 0, "from B")],
         );
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
-        let expected =
-            "[chatroom aaaaaa @alice 00:00Z] from A\n\
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
+        let expected = "[chatroom aaaaaa @alice 00:00Z] from A\n\
              [chatroom bbbbbb @bob 00:00Z] from B\n";
         assert_eq!(out, expected);
     }
@@ -539,7 +652,15 @@ mod tests {
             "bbbbbb".to_string(),
             vec![make(&ulid(2), B_PUBKEY, 0, "B middle")],
         );
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("A first"));
@@ -559,9 +680,21 @@ mod tests {
             msgs.push(make(&id, A_PUBKEY, 0, &body));
         }
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
 
-        assert!(out.len() <= HOOK_OUTPUT_BUDGET, "MUST fit within 8 KiB; got {}", out.len());
+        assert!(
+            out.len() <= HOOK_OUTPUT_BUDGET,
+            "MUST fit within 8 KiB; got {}",
+            out.len()
+        );
         assert!(
             out.starts_with("[chatroom] ("),
             "marker line MUST be first when truncation occurred: {out:?}"
@@ -571,8 +704,10 @@ mod tests {
             "marker line MUST mention skipped count: {out}"
         );
         // The KEPT lines should be the newest, so "01HZA...199" should appear.
-        assert!(out.contains(&format!("01HZA{:021}", 199)) || out.contains("xxxx"),
-                "newest message should be present in the body or its content");
+        assert!(
+            out.contains(&format!("01HZA{:021}", 199)) || out.contains("xxxx"),
+            "newest message should be present in the body or its content"
+        );
     }
 
     #[test]
@@ -584,7 +719,10 @@ mod tests {
             lines.push("x".repeat(100) + "\n");
         }
         let out = fit_to_budget(lines, 4 * 1024); // smaller budget to amplify drops
-        assert!(out.len() <= 4 * 1024, "must fit budget after iterative drops");
+        assert!(
+            out.len() <= 4 * 1024,
+            "must fit budget after iterative drops"
+        );
         assert!(out.starts_with("[chatroom] ("), "marker MUST lead");
     }
 
@@ -593,7 +731,15 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "alice")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "small")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert!(!out.starts_with("[chatroom] ("));
     }
 
@@ -602,7 +748,15 @@ mod tests {
         let nm = nicks(&[(A_PUBKEY, "alice")]);
         let msgs = vec![make(&ulid(1), A_PUBKEY, 0, "")];
         let rooms = one_room("a1b2c3", msgs);
-        let out = render(&HookInput { rooms: &rooms, nicknames: &nm, rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"), self_nick: None, room_summaries: empty_map(), room_file_indexes: empty_map(), self_pubkey: None });
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: None,
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: None,
+        });
         assert_eq!(out, "[chatroom @alice 00:00Z] \n");
     }
 
@@ -663,6 +817,47 @@ mod tests {
         assert!(!mentions_self("hi @bob", Some("alice")));
         assert!(!mentions_self("@alice", None)); // self_nick missing → no match
         assert!(!mentions_self("@alice", Some(""))); // empty → ignored
+    }
+
+    /// Word-boundary regression: substring matching used to false-positive
+    /// here. `@cc-bot` should NOT match broadcast `@cc`; `@alice_2` should
+    /// NOT match self_nick `alice`; etc. The `@<self>-cc` AI mirror form
+    /// is a separate, deliberate match (see the test below).
+    #[test]
+    fn mentions_self_respects_word_boundary() {
+        // Broadcast path: `@cc-bot` is NOT a mention of broadcast `cc`.
+        assert!(!mentions_self("@cc-bot ping", None));
+        // Broadcast path: `@cc!` IS — `!` is not a nick-continuation char.
+        assert!(mentions_self("ping @cc!", None));
+        // End-of-string boundary still counts.
+        assert!(mentions_self("over to @cc", None));
+        // `_` is a nick-continuation char — `@alice_2` is NOT a mention
+        // of `alice`. But the same body IS a mention of `alice_2`.
+        assert!(!mentions_self("@alice_2 hi", Some("alice")));
+        assert!(mentions_self("@alice_2 hi", Some("alice_2")));
+        // A peer with nick `yjx` (no hyphen) MUST NOT trip the `yj`
+        // self_nick — substring matcher used to false-positive here.
+        assert!(!mentions_self("@yjx hi", Some("yj")));
+    }
+
+    /// AI mirror form: one claude session on `bob`'s machine represents
+    /// both the human (`@bob`) and the AI (`@bob-cc`); both forms wake
+    /// the local claude. The human's UI strips this synthesis (it's a
+    /// hook-level rule, not a UI rule); see the TS port.
+    #[test]
+    fn mentions_self_matches_ai_mirror_form() {
+        // self_nick="yj": both `@yj` and `@yj-cc` count as me.
+        assert!(mentions_self("@yj-cc 你好", Some("yj")));
+        assert!(mentions_self("hey @yj!", Some("yj")));
+        // self_nick="yj-cc" matches `@yj-cc` directly; the synthesis is
+        // suppressed (no useless `@yj-cc-cc` lookup).
+        assert!(mentions_self("@yj-cc 你好", Some("yj-cc")));
+        // Boundary still applies to the synthesised mirror form too:
+        // `@yjx-cc` is NOT a mention of `yj`'s mirror.
+        assert!(!mentions_self("@yjx-cc hi", Some("yj")));
+        // And `@yj-ccs` is NOT a mention of `yj`'s mirror either —
+        // trailing `s` is a nick-cont char.
+        assert!(!mentions_self("@yj-ccs hi", Some("yj")));
     }
 
     /// When the body mentions the receiver, the rendered prefix gains a

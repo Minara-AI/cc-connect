@@ -45,7 +45,11 @@ async fn run_async(ticket_str: &str, no_relay: bool, relay: Option<&str>) -> Res
                     joined_header_done = true;
                 }
                 DisplayLine::Marker(s) => println!("{s}"),
-                DisplayLine::Incoming { nick_short, body, mentions_me } => {
+                DisplayLine::Incoming {
+                    nick_short,
+                    body,
+                    mentions_me,
+                } => {
                     if mentions_me {
                         println!("(@me) [{nick_short}] {body}");
                     } else {

@@ -196,7 +196,9 @@ pub fn ensure_hook_installed() -> Result<()> {
     println!("Without it, chat lines from your room won't surface in Claude Code.");
     println!();
     if !confirm("Install the hook now?", true)? {
-        println!("Skipping. You can install it later via `cc-connect-tui` re-run or `./install.sh`.");
+        println!(
+            "Skipping. You can install it later via `cc-connect-tui` re-run or `./install.sh`."
+        );
         return Ok(());
     }
     install_hook(&settings, &hook_path)?;
@@ -235,7 +237,10 @@ fn hook_already_installed(settings: &Path, hook_path: &Path) -> Result<bool> {
     }
     let v: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("parse JSON in {}", settings.display()))?;
-    let arr = match v.pointer("/hooks/UserPromptSubmit").and_then(|x| x.as_array()) {
+    let arr = match v
+        .pointer("/hooks/UserPromptSubmit")
+        .and_then(|x| x.as_array())
+    {
         Some(a) => a,
         None => return Ok(false),
     };
@@ -265,8 +270,7 @@ fn install_hook(settings: &Path, hook_path: &Path) -> Result<()> {
         .with_context(|| format!("create_dir_all {}", parent.display()))?;
     if settings.exists() {
         let bak = settings.with_extension(format!("json.bak.{}", now_secs()));
-        std::fs::copy(settings, &bak)
-            .with_context(|| format!("backup {}", settings.display()))?;
+        std::fs::copy(settings, &bak).with_context(|| format!("backup {}", settings.display()))?;
     }
     let mut data: serde_json::Value = if settings.exists() {
         let raw = std::fs::read_to_string(settings)?;
@@ -317,8 +321,7 @@ fn install_hook(settings: &Path, hook_path: &Path) -> Result<()> {
     }));
 
     let written = serde_json::to_string_pretty(&data)? + "\n";
-    std::fs::write(settings, &written)
-        .with_context(|| format!("write {}", settings.display()))?;
+    std::fs::write(settings, &written).with_context(|| format!("write {}", settings.display()))?;
     let _ = std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600));
     Ok(())
 }
@@ -341,13 +344,21 @@ pub fn ensure_self_nick(override_nick: Option<&str>) -> Result<Option<String>> {
         let nick = sanitize_nick(raw)?;
         cfg.self_nick = Some(nick.clone());
         write_config(&cfg_path, &cfg)?;
-        let display = if nick.is_empty() { "(none)" } else { nick.as_str() };
+        let display = if nick.is_empty() {
+            "(none)"
+        } else {
+            nick.as_str()
+        };
         println!("[setup] nickname set to {display} (saved)");
         return Ok(if nick.is_empty() { None } else { Some(nick) });
     }
 
     if let Some(existing) = cfg.self_nick.clone() {
-        let display = if existing.is_empty() { "(none — pubkey prefix)" } else { existing.as_str() };
+        let display = if existing.is_empty() {
+            "(none — pubkey prefix)"
+        } else {
+            existing.as_str()
+        };
         println!(
             "[setup] running as {display}  (use `--nick <name>` to change, or edit ~/.cc-connect/config.json)"
         );
@@ -357,10 +368,7 @@ pub fn ensure_self_nick(override_nick: Option<&str>) -> Result<Option<String>> {
     println!();
     println!("Pick a display name (other peers see this as your sender label).");
     println!("Leave blank to use a short pubkey prefix.");
-    let raw = match read_line("Display name: ") {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    };
+    let raw = read_line("Display name: ").unwrap_or_default();
     let nick = sanitize_nick(&raw)?;
     cfg.self_nick = Some(nick.clone());
     write_config(&cfg_path, &cfg)?;
@@ -426,11 +434,7 @@ pub fn ensure_relay_choice(provided: Option<&str>) -> Result<Option<String>> {
     let preserved_nick = cfg.self_nick.clone();
     let (relay_mode, relay_url, returned) = match answer {
         RelayChoice::N0 => (Some("n0".to_string()), None, None),
-        RelayChoice::Custom(url) => (
-            Some("custom".to_string()),
-            Some(url.clone()),
-            Some(url),
-        ),
+        RelayChoice::Custom(url) => (Some("custom".to_string()), Some(url.clone()), Some(url)),
         RelayChoice::Skip => (Some("skip".to_string()), None, None),
     };
     let new_cfg = ConnectConfig {
@@ -517,7 +521,10 @@ fn read_line(prompt: &str) -> Result<String> {
     print!("{prompt}");
     std::io::stdout().flush().ok();
     let mut buf = String::new();
-    std::io::stdin().lock().read_line(&mut buf).context("read stdin")?;
+    std::io::stdin()
+        .lock()
+        .read_line(&mut buf)
+        .context("read stdin")?;
     if buf.is_empty() {
         bail!("EOF on stdin");
     }

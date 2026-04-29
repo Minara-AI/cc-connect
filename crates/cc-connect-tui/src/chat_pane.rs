@@ -54,7 +54,11 @@ pub fn render(
             ChatLineKind::Incoming | ChatLineKind::IncomingMention
         );
         let is_self_msg = matches!(cl.kind, ChatLineKind::Echo);
-        let align = if is_peer { Alignment::Right } else { Alignment::Left };
+        let align = if is_peer {
+            Alignment::Right
+        } else {
+            Alignment::Left
+        };
 
         let main = match cl.kind {
             ChatLineKind::System => Line::from(Span::styled(cl.text.clone(), theme::chat_system())),
@@ -69,9 +73,7 @@ pub fn render(
         // Per-message timestamp on the same side as its message body.
         if (is_peer || is_self_msg) && cl.ts > 0 {
             let stamp = format!("{} Z", format_utc_hhmm(cl.ts));
-            lines.push(
-                Line::from(Span::styled(stamp, theme::chat_timestamp())).alignment(align),
-            );
+            lines.push(Line::from(Span::styled(stamp, theme::chat_timestamp())).alignment(align));
         }
     }
 
@@ -99,8 +101,7 @@ pub fn render(
     // they haven't pressed Esc to dismiss, and we have at least one match.
     if focused && !tab.mention_dismissed {
         if let Some(prefix) = mention::current_at_token(&tab.input_buf) {
-            let candidates =
-                mention::mention_candidates(&tab.recent_nicks, prefix, self_nick);
+            let candidates = mention::mention_candidates(&tab.recent_nicks, prefix, self_nick);
             if !candidates.is_empty() {
                 render_mention_popup(frame, chunks[1], &candidates, tab.mention_idx);
             }
@@ -115,7 +116,7 @@ fn render_mention_popup(frame: &mut Frame, input_area: Rect, candidates: &[Strin
     const MAX_ROWS: u16 = 5;
     let visible_n = candidates.len().min(MAX_ROWS as usize);
     let height = (visible_n as u16) + 2; // +2 for top/bottom border
-    // Width: longest candidate + 4 (border + padding + ↩ marker).
+                                         // Width: longest candidate + 4 (border + padding + ↩ marker).
     let widest = candidates
         .iter()
         .map(|s| s.chars().count())
@@ -186,7 +187,10 @@ fn render_incoming(text: &str, mention: bool) -> Line<'static> {
             let body = &rest[close + 2..];
             let mut spans = Vec::with_capacity(5);
             if !mention_marker.is_empty() {
-                spans.push(Span::styled(mention_marker.to_string(), theme::chat_mention_marker()));
+                spans.push(Span::styled(
+                    mention_marker.to_string(),
+                    theme::chat_mention_marker(),
+                ));
             }
             spans.push(Span::styled("[".to_string(), nick_style));
             spans.push(Span::styled(nick.to_string(), nick_style));
