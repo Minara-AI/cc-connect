@@ -44,6 +44,8 @@ fn magic_moment_hook_emits_canonical_chatroom_line_and_advances_cursor() {
         .env_clear()
         .env("HOME", &env.home)
         .env("TMPDIR", &env.tmpdir)
+        // v0.4.2-alpha env-gate: hook is a no-op without CC_CONNECT_ROOM.
+        .env("CC_CONNECT_ROOM", TEST_TOPIC_HEX)
         .env(
             "PATH",
             std::env::var("PATH").unwrap_or_else(|_| String::new()),
@@ -163,6 +165,9 @@ fn magic_moment_hook_skips_dead_pid_active_room_file() {
         .env_clear()
         .env("HOME", &env.home)
         .env("TMPDIR", &env.tmpdir)
+        // v0.4.2-alpha env-gate: stale-PID sweep only runs when the hook
+        // has a topic to inject for, otherwise it bails before scanning.
+        .env("CC_CONNECT_ROOM", TEST_TOPIC_HEX)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -240,10 +245,13 @@ fn routing_with_env_var_scopes_to_one_room() {
     );
 }
 
-/// Without `CC_CONNECT_ROOM` set, the hook keeps the legacy "inject all
-/// active rooms" behaviour for back-compat with standalone Claude Code.
+/// Without `CC_CONNECT_ROOM` set, the hook MUST be a no-op even if active
+/// rooms exist on the machine. This is the v0.4.2-alpha gating contract:
+/// chat context only bleeds into Claude sessions explicitly bound by
+/// cc-connect-tui. Any unrelated `claude` process on the same box stays
+/// blind to the chat substrate.
 #[test]
-fn routing_without_env_var_includes_all_rooms() {
+fn routing_without_env_var_is_a_noop() {
     const TOPIC_A: &str =
         "3333333333333333333333333333333333333333333333333333333333333333";
     const TOPIC_B: &str =
@@ -262,7 +270,7 @@ fn routing_without_env_var_includes_all_rooms() {
         .env_clear()
         .env("HOME", &env.home)
         .env("TMPDIR", &env.tmpdir)
-        // No CC_CONNECT_ROOM — legacy mode.
+        // CC_CONNECT_ROOM intentionally NOT set.
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -277,15 +285,11 @@ fn routing_without_env_var_includes_all_rooms() {
         })
         .expect("hook child");
 
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert_eq!(out.status.code(), Some(0), "hook MUST exit 0");
     assert!(
-        stdout.contains(BODY_A),
-        "legacy mode MUST include room A; stdout was {stdout:?}"
-    );
-    assert!(
-        stdout.contains(BODY_B),
-        "legacy mode MUST include room B; stdout was {stdout:?}"
+        out.stdout.is_empty(),
+        "without CC_CONNECT_ROOM the hook MUST emit nothing; stdout was {:?}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }
 
