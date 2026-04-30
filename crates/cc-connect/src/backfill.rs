@@ -157,6 +157,17 @@ async fn handle_one(log_path: &Path, connection: Connection) -> Result<()> {
     crate::gossip_debug::log("backfill server", "write_length_prefixed ok");
     send.finish().context("finish send stream")?;
     crate::gossip_debug::log("backfill server", "finish ok");
+    // QUIC: `finish()` only schedules the FIN bit, it does NOT guarantee
+    // the bytes have actually flushed to the peer. If we drop the
+    // Connection (which happens when handle_one returns and the
+    // ProtocolHandler::accept future ends), in-flight bytes are
+    // discarded — the joiner sees "connection lost" mid-read of the
+    // length prefix even though the server logged "finish ok".
+    // `stopped().await` resolves once the peer has ACK'd the FIN, so
+    // it's safe to drop the connection. Bound it so a misbehaving
+    // joiner can't hold the handler open indefinitely.
+    let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
+    crate::gossip_debug::log("backfill server", "stopped ok");
 
     Ok(())
 }
