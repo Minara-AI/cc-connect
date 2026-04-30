@@ -340,36 +340,41 @@ async fn daemon_async(relay: Option<&str>) -> Result<()> {
 
     // Subscribe to our own topic so joiners can bootstrap (the fix from
     // 64eabb5; otherwise `subscribe_and_join` on the joiner side hangs).
-    // Bound to a let with a leading underscore so the handle stays alive
-    // for the daemon's lifetime — gossip considers the topic membership
-    // alive as long as any half of the handle exists.
-    let _topic_handle = gossip.subscribe(topic, vec![]).await?;
-
-    // Optional gossip-event tracing for diagnosing mesh-forwarding bugs.
-    // OFF by default — production behaviour is the passive subscriber
-    // above (which has worked in earlier releases). When the env var is
-    // set, also spawn a debug-only drain task that mirrors gossip events
-    // to ~/.cc-connect/gossip-debug.log so a multi-peer reproduction can
-    // be reconstructed by sorting log lines from each machine by ts.
-    let _debug_drain: Option<tokio::task::JoinHandle<()>> = if crate::gossip_debug::enabled() {
+    //
+    // CRITICAL: actively drain the receiver. Earlier passive `_topic_handle`
+    // bound the handle but never read from it; observation (gossip-debug
+    // log) showed remote peers' broadcasts never landed at this endpoint
+    // even when the X→peer outbound forwarding worked. Hypothesis:
+    // iroh-gossip back-pressures inbound dispatch when the subscriber's
+    // queue isn't drained, and packets from network peers are dropped at
+    // the protocol layer before reaching dispatch. An active drain
+    // (`receiver.next().await` in a loop) keeps the queue empty.
+    //
+    // Both halves of `split()` are held in the task closure: dropping
+    // the sender is suspected to mark the subscription dead in some
+    // iroh-gossip code paths. The drain task otherwise discards events;
+    // logging only happens when CC_CONNECT_GOSSIP_DEBUG is set.
+    let topic_handle = gossip.subscribe(topic, vec![]).await?;
+    let _drain_task: tokio::task::JoinHandle<()> = {
         let endpoint_id = endpoint.id();
         let label = format!(
             "host-bg X={}",
             endpoint_id.to_string().chars().take(8).collect::<String>()
         );
-        let dbg_handle = gossip.subscribe(topic, vec![]).await?;
-        Some(tokio::spawn(async move {
-            let (_sender, mut receiver) = dbg_handle.split();
+        tokio::spawn(async move {
+            let (sender, mut receiver) = topic_handle.split();
+            // Keep sender alive for the task's lifetime — see comment above.
+            let _sender_alive = sender;
             while let Some(ev) = receiver.next().await {
-                let summary = match ev {
-                    Ok(e) => format!("recv {e:?}"),
-                    Err(e) => format!("stream-error: {e}"),
-                };
-                crate::gossip_debug::log(&label, &summary);
+                if crate::gossip_debug::enabled() {
+                    let summary = match &ev {
+                        Ok(e) => format!("recv {e:?}"),
+                        Err(e) => format!("stream-error: {e}"),
+                    };
+                    crate::gossip_debug::log(&label, &summary);
+                }
             }
-        }))
-    } else {
-        None
+        })
     };
 
     let our_addr = endpoint.addr();
@@ -419,9 +424,9 @@ async fn daemon_async(relay: Option<&str>) -> Result<()> {
         _ = sigint.recv() => {},
     }
 
-    // Clean up.
+    // Clean up. The drain task owns the topic handle's halves; dropping
+    // gossip below ends the underlying stream and the task exits.
     let _ = std::fs::remove_file(&pid_path);
-    drop(_topic_handle);
     drop(gossip);
     drop(endpoint);
     Ok(())
