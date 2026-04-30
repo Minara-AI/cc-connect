@@ -48,6 +48,11 @@ enum Cmd {
         /// `~/.cc-connect/config.json`. Use empty string to clear.
         #[arg(long, value_name = "NAME")]
         nick: Option<String>,
+        /// Internal: the parent launcher (`cc-connect room start`) just
+        /// spawned the host-bg daemon for this room and is handing it off
+        /// to us. Drives the Ctrl-W "stop daemon too?" confirm prompt.
+        #[arg(long, hide = true)]
+        hosting: bool,
         /// Trailing args forwarded to `claude`. Use `--` to separate.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -82,8 +87,18 @@ fn main() -> Result<()> {
                 ticket,
                 relay,
                 nick,
+                hosting,
                 claude_args,
-            } => join(&ticket, relay.as_deref(), nick.as_deref(), claude_args).await,
+            } => {
+                join(
+                    &ticket,
+                    relay.as_deref(),
+                    nick.as_deref(),
+                    hosting,
+                    claude_args,
+                )
+                .await
+            }
         }
     })
 }
@@ -162,6 +177,7 @@ async fn join(
     ticket: &str,
     relay: Option<&str>,
     nick_override: Option<&str>,
+    hosting: bool,
     claude_args: Vec<String>,
 ) -> Result<()> {
     if let Err(e) = setup::ensure_hook_installed() {
@@ -173,13 +189,7 @@ async fn join(
     if let Err(e) = setup::ensure_self_nick(nick_override) {
         eprintln!("(setup: nick prompt failed: {e:#})");
     }
-    enter_tui(
-        ticket.to_string(),
-        relay,
-        claude_args,
-        /* hosting */ false,
-    )
-    .await
+    enter_tui(ticket.to_string(), relay, claude_args, hosting).await
 }
 
 async fn enter_tui(

@@ -424,7 +424,7 @@ fn exec_tui_fallback(
     ticket: &str,
     relay: Option<&str>,
     claude_args: &[String],
-    _hosting: bool,
+    hosting: bool,
 ) -> Result<()> {
     let tui = locate_tui_bin()?;
     // The TUI itself calls `cc_connect::launcher_paths::prepare_*` from
@@ -437,6 +437,13 @@ fn exec_tui_fallback(
     cmd.arg("join").arg(ticket);
     if let Some(r) = relay {
         cmd.arg("--relay").arg(r);
+    }
+    // Propagate the "we own the host-bg daemon" bit so Ctrl-W in the TUI
+    // surfaces the "stop daemon too?" confirm prompt. Without this the
+    // launcher path silently drops it (the user pre-spawned the daemon
+    // in run_start) and the close-tab gesture skips the confirm.
+    if hosting {
+        cmd.arg("--hosting");
     }
     if !claude_args.is_empty() {
         cmd.arg("--");
