@@ -31,6 +31,7 @@ const ZELLIJ_LAYOUT: &str = include_str!("../../../layouts/cc-connect.kdl");
 const TMUX_LAUNCHER: &str = include_str!("../../../layouts/cc-connect.tmux.sh");
 const CLAUDE_WRAPPER_SH: &str = include_str!("../../../layouts/claude-wrap.sh");
 const AUTO_REPLY_PROMPT: &str = include_str!("../../../layouts/auto-reply-prompt.md");
+const BOOTSTRAP_PROMPT: &str = include_str!("../../../layouts/bootstrap-prompt.md");
 
 #[derive(Debug, Clone, Copy)]
 enum Multiplexer {
@@ -273,6 +274,7 @@ fn exec_zellij(topic_hex: &str, _claude_args: &[String]) -> Result<()> {
     let chat_ui_bin = locate_chat_ui_bin()?;
     let claude_wrapper = prepare_claude_wrapper()?;
     let _ = prepare_auto_reply_prompt()?; // wrapper reads it from /tmp default path
+    let _ = prepare_bootstrap_prompt()?; // ditto
     let tab_name: String = topic_hex.chars().take(12.min(topic_hex.len())).collect();
 
     let layout_kdl = ZELLIJ_LAYOUT
@@ -344,6 +346,7 @@ fn exec_zellij(topic_hex: &str, _claude_args: &[String]) -> Result<()> {
 fn exec_tmux(topic_hex: &str, _claude_args: &[String]) -> Result<()> {
     let claude_wrapper = prepare_claude_wrapper()?;
     let _ = prepare_auto_reply_prompt()?;
+    let _ = prepare_bootstrap_prompt()?;
 
     let tmux_script =
         TMUX_LAUNCHER.replace("__CLAUDE_WRAPPER__", &claude_wrapper.to_string_lossy());
@@ -447,6 +450,23 @@ fn prepare_claude_wrapper() -> Result<PathBuf> {
 /// `Ok(None)` if the user has opted out via `CC_CONNECT_NO_AUTO_REPLY=1`
 /// — the wrapper script then falls through to plain claude.
 fn prepare_auto_reply_prompt() -> Result<Option<PathBuf>> {
+    write_optional_prompt("auto-reply.md", AUTO_REPLY_PROMPT)
+}
+
+/// Write the bootstrap user-prompt (the "say hello + enter listener
+/// loop" first turn handed to claude as argv) into
+/// `/tmp/cc-connect-$UID/bootstrap.md`. Same opt-out via
+/// `CC_CONNECT_NO_AUTO_REPLY=1` as the auto-reply prompt.
+fn prepare_bootstrap_prompt() -> Result<Option<PathBuf>> {
+    write_optional_prompt("bootstrap.md", BOOTSTRAP_PROMPT)
+}
+
+/// Backing implementation of `prepare_auto_reply_prompt` /
+/// `prepare_bootstrap_prompt`: writes `content` to
+/// `/tmp/cc-connect-$UID/<filename>` (mode 0600 in a 0700 dir), or
+/// returns `Ok(None)` when the user opted out via
+/// `CC_CONNECT_NO_AUTO_REPLY`.
+fn write_optional_prompt(filename: &str, content: &str) -> Result<Option<PathBuf>> {
     if std::env::var_os("CC_CONNECT_NO_AUTO_REPLY")
         .map(|v| !v.is_empty())
         .unwrap_or(false)
@@ -457,9 +477,8 @@ fn prepare_auto_reply_prompt() -> Result<Option<PathBuf>> {
     let dir = cc_connect_tmp_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("create_dir_all {}", dir.display()))?;
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    let path = dir.join("auto-reply.md");
-    std::fs::write(&path, AUTO_REPLY_PROMPT)
-        .with_context(|| format!("write {}", path.display()))?;
+    let path = dir.join(filename);
+    std::fs::write(&path, content).with_context(|| format!("write {}", path.display()))?;
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     Ok(Some(path))
 }
@@ -471,6 +490,15 @@ fn exec_tui_fallback(
     hosting: bool,
 ) -> Result<()> {
     let tui = locate_tui_bin()?;
+    // Write the auto-reply + bootstrap prompts to the per-UID tmpdir
+    // and pass their absolute paths via env. cc-connect-tui reads these
+    // env vars and threads them into the claude PTY's argv. Same opt-out
+    // (`CC_CONNECT_NO_AUTO_REPLY=1`) as the multiplexer paths.
+    let auto_reply_path = prepare_auto_reply_prompt()?;
+    let bootstrap_path = prepare_bootstrap_prompt()?;
+
+    print_exit_hint();
+
     let mut cmd = Command::new(&tui);
     if hosting {
         // `cc-connect-tui start` starts its own host-bg internally — but
@@ -485,6 +513,12 @@ fn exec_tui_fallback(
     if !claude_args.is_empty() {
         cmd.arg("--");
         cmd.args(claude_args);
+    }
+    if let Some(p) = auto_reply_path {
+        cmd.env("CC_CONNECT_AUTO_REPLY_FILE", p);
+    }
+    if let Some(p) = bootstrap_path {
+        cmd.env("CC_CONNECT_BOOTSTRAP_FILE", p);
     }
     let err = cmd.exec();
     Err(anyhow!("exec {} failed: {err}", tui.display()))

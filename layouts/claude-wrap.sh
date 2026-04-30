@@ -34,24 +34,18 @@ if [ "$#" -gt 0 ] && [ "${#1}" -eq 64 ]; then
 fi
 
 PROMPT_FILE="${CC_CONNECT_AUTO_REPLY_FILE:-${TMPDIR:-/tmp}/cc-connect-$(id -u)/auto-reply.md}"
+BOOTSTRAP_FILE="${CC_CONNECT_BOOTSTRAP_FILE:-${TMPDIR:-/tmp}/cc-connect-$(id -u)/bootstrap.md}"
 CLAUDE="${CC_CONNECT_CLAUDE_BIN:-claude}"
 
-# Initial user prompt that boots claude straight into "say hello,
-# then listen". Claude Code doesn't auto-execute its system prompt —
-# it sits idle until something arrives on the user channel — so we
-# hand it a tiny first turn. Two steps:
-#   1. Send a brief greeting via cc_send so peers see this AI just
-#      came online (peers are humans + other AIs in the room).
-#   2. Enter the ambient listener loop per the system prompt.
-# The wording stays prescriptive but leaves the greeting itself to
-# claude's discretion — it knows the room's tone better than we do.
-BOOTSTRAP_PROMPT="You just joined the cc-connect room. Do these two things in order:
-
-1. Send a single brief greeting line to the room via the \`cc_send\` MCP tool. Terse, dev-to-dev, one sentence. Don't introduce yourself with a long bio; the room already sees your nick. Skip if you've been told elsewhere not to greet.
-
-2. Immediately call \`cc_wait_for_mention\` (no \`since_id\` on this first call). Follow the listener-loop directive in your system prompt from there: re-arm on \`null\`, reply via \`cc_send\`/\`cc_at\` on a hit, then re-arm with \`since_id = id\`."
-
-if [ -z "${CC_CONNECT_NO_AUTO_REPLY:-}" ] && [ -f "$PROMPT_FILE" ]; then
-  exec "$CLAUDE" --append-system-prompt "$(cat "$PROMPT_FILE")" "$@" "$BOOTSTRAP_PROMPT"
+# When both files exist (room.rs writes them at launch unless
+# CC_CONNECT_NO_AUTO_REPLY=1), claude boots with:
+#   - the auto-reply directive appended to its system prompt
+#   - the bootstrap message as its first user prompt (which kicks
+#     it into "say hello + enter listener loop" without the user
+#     having to type anything first)
+# Bootstrap content lives in layouts/bootstrap-prompt.md so the TUI
+# path (cc-connect-tui) can include the same string via include_str!.
+if [ -z "${CC_CONNECT_NO_AUTO_REPLY:-}" ] && [ -f "$PROMPT_FILE" ] && [ -f "$BOOTSTRAP_FILE" ]; then
+  exec "$CLAUDE" --append-system-prompt "$(cat "$PROMPT_FILE")" "$@" "$(cat "$BOOTSTRAP_FILE")"
 fi
 exec "$CLAUDE" "$@"
