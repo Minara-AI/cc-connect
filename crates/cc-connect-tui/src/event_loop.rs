@@ -17,7 +17,7 @@ use cc_connect::chat_session::DisplayLine;
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers,
+        KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -156,6 +156,9 @@ pub async fn run(opts: RunOpts) -> Result<()> {
                         let _ = tab.pty_master.resize(claude_size);
                         tab.vt_parser.screen_mut().set_size(claude_size.rows, claude_size.cols);
                     }
+                }
+                Some(Ok(CtEvent::Mouse(m))) => {
+                    handle_mouse(&mut app, m);
                 }
                 Some(Err(_)) | None => break,
                 _ => {}
@@ -335,8 +338,16 @@ async fn handle_key(
 /// rows (claude). Approximately a half-screen at typical terminal sizes.
 const SCROLL_STEP: i32 = 10;
 
+/// One trackpad / mouse-wheel notch. Smaller than PgUp because trackpad
+/// gestures stream many events per swipe; users tune granularity by
+/// gesture velocity.
+const MOUSE_SCROLL_STEP: i32 = 3;
+
 fn scroll_active_pane(app: &mut App, delta: i32) {
-    let focus = app.focus;
+    scroll_pane(app, app.focus, delta);
+}
+
+fn scroll_pane(app: &mut App, focus: Focus, delta: i32) {
     let Some(t) = app.tabs.active_tab_mut() else {
         return;
     };
@@ -349,6 +360,30 @@ fn scroll_active_pane(app: &mut App, delta: i32) {
     } else {
         target.saturating_sub(delta as u16)
     };
+}
+
+/// Trackpad / mouse-wheel scroll. Routes to whichever pane the cursor is
+/// over (left 60% = claude, right 40% = chat) so users can scroll the
+/// pane they're pointing at without `F2` first. Falls back to the
+/// focused pane when the click row is in the header / tab strip.
+fn handle_mouse(app: &mut App, m: MouseEvent) {
+    let delta = match m.kind {
+        MouseEventKind::ScrollUp => -MOUSE_SCROLL_STEP,
+        MouseEventKind::ScrollDown => MOUSE_SCROLL_STEP,
+        _ => return,
+    };
+    let cols = crossterm::terminal::size().map(|(c, _)| c).unwrap_or(120);
+    // Same split as `draw`: header + tab-strip take rows 0–1, panes
+    // start at row 2; horizontal split is 60/40.
+    let claude_split = ((cols as u32) * 60 / 100) as u16;
+    let target = if m.row < 2 {
+        app.focus
+    } else if m.column < claude_split {
+        Focus::Claude
+    } else {
+        Focus::Chat
+    };
+    scroll_pane(app, target, delta);
 }
 
 async fn handle_chat_key(app: &mut App, key: KeyEvent) {
