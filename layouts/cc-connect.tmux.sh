@@ -39,8 +39,9 @@ cat <<'TIPS'
   Ctrl-b &      kill current window (a single room)
   Ctrl-b x      kill current pane
 
-  Prefer the old single-window TUI hotkeys instead? Quit zellij/tmux
-  and re-launch with CC_CONNECT_PREFER_TUI=1 cc-connect room start.
+  Prefer the embedded TUI's familiar Ctrl-W / Ctrl-Q hotkeys?
+  Quit tmux and re-launch with `CC_CONNECT_MULTIPLEXER=` unset
+  (TUI is the default now).
 TIPS
 
 apply_session_help() {

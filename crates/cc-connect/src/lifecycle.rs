@@ -177,6 +177,250 @@ pub fn run_uninstall(purge: bool) -> Result<()> {
     Ok(())
 }
 
+// ---- `cc-connect upgrade` --------------------------------------------------
+
+/// Pull the latest source from the install repo's `origin`, run a clean
+/// uninstall (without `--purge`, so identity + nicknames survive), then
+/// re-run `install.sh` from the freshly-pulled repo. End state: every
+/// cc-connect binary, hook entry, MCP entry, and `~/.local/bin` symlink
+/// points at code from the new HEAD; user identity + room state survive.
+///
+/// `yes`: if true, skip the interactive confirmation. Used by CI / scripted
+/// upgrades. Without it, the user is prompted after the diff preview.
+///
+/// Implementation contract: at no point is the running process killed.
+/// `cc-connect upgrade` exec's `install.sh` at the end, so the new
+/// install fully replaces the old before the user gets their shell back.
+/// Identity + nicknames (`~/.cc-connect/identity.key`, `nicknames.json`)
+/// are NEVER touched here — that's `cc-connect uninstall --purge`'s job.
+pub fn run_upgrade(yes: bool) -> Result<()> {
+    use std::io::Write;
+
+    eprintln!("[upgrade] cc-connect");
+
+    // 1. Find the install repo (walk up from current_exe until .git).
+    let repo = locate_install_repo().context("locate cc-connect install repo")?;
+    eprintln!("[upgrade] install repo: {}", repo.display());
+
+    // 2. Fetch latest from origin.
+    eprintln!("[upgrade] fetching origin...");
+    if !run_git(&repo, &["fetch", "origin"]) {
+        anyhow::bail!("git fetch origin failed in {}", repo.display());
+    }
+
+    // 3. Determine current branch + compare HEAD to origin/<branch>.
+    let branch = git_current_branch(&repo).context("read current branch")?;
+    let local = git_rev_parse(&repo, "HEAD").context("rev-parse HEAD")?;
+    let remote_ref = format!("origin/{branch}");
+    let remote =
+        git_rev_parse(&repo, &remote_ref).with_context(|| format!("rev-parse {remote_ref}"))?;
+
+    if local == remote {
+        eprintln!(
+            "[upgrade] already at the latest commit on {branch} ({}). Nothing to do.",
+            &local[..8.min(local.len())]
+        );
+        return Ok(());
+    }
+
+    let ahead = git_count(&repo, &format!("{local}..{remote}"));
+    let behind = git_count(&repo, &format!("{remote}..{local}"));
+    eprintln!(
+        "[upgrade] {behind} local commit(s) ahead of {remote_ref}, {ahead} remote commit(s) ahead of HEAD."
+    );
+    if behind > 0 {
+        eprintln!(
+            "[upgrade] WARNING: local HEAD has commits not in {remote_ref}. \
+             A fast-forward pull will fail. Resolve manually before retrying upgrade."
+        );
+        anyhow::bail!("local branch has diverged");
+    }
+
+    eprintln!("[upgrade] incoming commits:");
+    let _ = run_git(
+        &repo,
+        &[
+            "log",
+            "--oneline",
+            "--no-decorate",
+            &format!("{local}..{remote}"),
+        ],
+    );
+
+    // 4. Confirm.
+    if !yes {
+        eprintln!();
+        if !confirm_yn("Proceed with upgrade?", true)? {
+            eprintln!("[upgrade] cancelled.");
+            return Ok(());
+        }
+    }
+
+    // 5. Stop daemons + strip stale config (uninstall without --purge).
+    eprintln!();
+    eprintln!("[upgrade] running uninstall (no --purge — identity + nicknames preserved)...");
+    if let Err(e) = run_uninstall(false) {
+        eprintln!("[upgrade] warn: uninstall partial: {e:#}");
+    }
+
+    // 6. git pull --ff-only.
+    eprintln!();
+    eprintln!("[upgrade] pulling latest source...");
+    if !run_git(&repo, &["pull", "--ff-only", "origin", &branch]) {
+        anyhow::bail!(
+            "git pull --ff-only failed. Resolve manually in {} and re-run.",
+            repo.display()
+        );
+    }
+
+    // 7. Re-run install.sh from the freshly-pulled repo. install.sh
+    // rebuilds, re-symlinks ~/.local/bin/, and re-registers the hook +
+    // MCP entries against the new binaries. We pass --yes if the
+    // caller asked us to skip prompts.
+    let install_sh = repo.join("install.sh");
+    if !install_sh.exists() {
+        anyhow::bail!(
+            "install.sh not found at {} — repo layout changed?",
+            install_sh.display()
+        );
+    }
+
+    eprintln!();
+    eprintln!("[upgrade] running install.sh...");
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(&install_sh).current_dir(&repo);
+    if yes {
+        cmd.arg("--yes");
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("spawn {}", install_sh.display()))?;
+    if !status.success() {
+        anyhow::bail!("install.sh exited with {:?}", status.code());
+    }
+
+    let _ = std::io::stdout().flush();
+    eprintln!();
+    eprintln!("[upgrade] done.");
+    eprintln!("  • Restart Claude Code so it spawns the new MCP server child.");
+    eprintln!(
+        "  • New binaries are in {}/target/release/.",
+        repo.display()
+    );
+    Ok(())
+}
+
+/// Walk up from the running cc-connect binary's parent looking for a
+/// `.git` directory. Errors if none found within 6 levels.
+fn locate_install_repo() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("current_exe")?;
+    let mut dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current_exe has no parent: {}", exe.display()))?
+        .to_path_buf();
+    for _ in 0..6 {
+        if dir.join(".git").exists() {
+            return Ok(dir);
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => break,
+        }
+    }
+    anyhow::bail!(
+        "could not locate cc-connect install repo above {} — is the binary running from a non-git location? \
+         Re-run upgrade from inside the cc-connect clone.",
+        exe.display()
+    );
+}
+
+fn run_git(repo: &Path, args: &[&str]) -> bool {
+    use std::process::{Command, Stdio};
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn git_rev_parse(repo: &Path, refname: &str) -> Result<String> {
+    use std::process::{Command, Stdio};
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", refname])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("spawn git rev-parse {refname}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git rev-parse {refname} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn git_current_branch(repo: &Path) -> Result<String> {
+    use std::process::{Command, Stdio};
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("spawn git symbolic-ref")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git symbolic-ref --short HEAD failed (detached HEAD?): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn git_count(repo: &Path, range: &str) -> usize {
+    use std::process::{Command, Stdio};
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-list", "--count", range])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok();
+    out.and_then(|o| {
+        String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<usize>()
+            .ok()
+    })
+    .unwrap_or(0)
+}
+
+fn confirm_yn(prompt: &str, default_yes: bool) -> Result<bool> {
+    use std::io::Write;
+    let suffix = if default_yes { "[Y/n]" } else { "[y/N]" };
+    print!("{prompt} {suffix} ");
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .context("read stdin")?;
+    let trimmed = input.trim().to_lowercase();
+    Ok(if trimmed.is_empty() {
+        default_yes
+    } else {
+        matches!(trimmed.as_str(), "y" | "yes")
+    })
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 fn home_dir() -> PathBuf {

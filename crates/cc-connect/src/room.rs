@@ -91,15 +91,16 @@ fn launch_room(
             }
         }
         Multiplexer::None => {
-            // Fallback: cc-connect-tui spawns its own chat_session in-process.
-            // Don't start chat-daemon — both binding chat.sock for the same
-            // topic would conflict, and the gossip mesh would see the same
-            // identity from two processes.
-            eprintln!("! note: zellij and tmux not found — falling back to embedded TUI.");
-            eprintln!("! install one of:");
-            eprintln!("!   brew install zellij    # macOS (recommended)");
-            eprintln!("!   apt install tmux       # debian/ubuntu");
-            eprintln!("! …for the multi-pane chat-ui experience.");
+            // Default path: cc-connect-tui spawns its own chat_session
+            // in-process (familiar Ctrl-W / Ctrl-Q / [1-9] tab hotkeys).
+            // Don't start chat-daemon — both binding chat.sock for the
+            // same topic would conflict, and the gossip mesh would see
+            // the same identity from two processes.
+            eprintln!("[room] using embedded TUI (default).");
+            eprintln!(
+                "  Want side-by-side panes via a multiplexer? Set \
+                 `CC_CONNECT_MULTIPLEXER=zellij` (or `tmux`, or `auto`) and re-launch."
+            );
             exec_tui_fallback(ticket, relay, claude_args, hosting)
         }
     }
@@ -204,27 +205,56 @@ fn ensure_chat_daemon(ticket: &str, no_relay: bool, relay: Option<&str>) -> Resu
 
 // ---- multiplexer detection + exec --------------------------------------
 
+/// Pick the multiplexer to launch. Default is `None` (= the embedded
+/// `cc-connect-tui`), which is the most-portable + most-discoverable
+/// option (familiar Ctrl-W / Ctrl-Q hotkeys, no extra package needed).
+///
+/// Users opt into a multiplexer via `CC_CONNECT_MULTIPLEXER`:
+///
+///   - `zellij` — use zellij; error to stderr + fall back to TUI if
+///     zellij isn't on PATH
+///   - `tmux`   — use tmux; same fallback behaviour
+///   - `auto`   — try zellij, then tmux, then TUI (legacy behaviour
+///     for users who liked the multi-pane default)
+///   - unset / anything else → TUI
 fn detect_multiplexer() -> Multiplexer {
-    // Escape hatches: users who prefer the embedded TUI's familiar
-    // Ctrl-W/Ctrl-Q hotkeys (or who are on a remote box without
-    // zellij and find tmux's prefix-key UX too obscure) can opt out
-    // via CC_CONNECT_PREFER_TUI=1 to skip multiplexer detection
-    // entirely. CC_CONNECT_NO_MULTIPLEXER=1 is an alias.
-    for var in ["CC_CONNECT_PREFER_TUI", "CC_CONNECT_NO_MULTIPLEXER"] {
-        if std::env::var_os(var)
-            .map(|v| !v.is_empty() && v != "0")
-            .unwrap_or(false)
-        {
-            return Multiplexer::None;
+    let value = std::env::var("CC_CONNECT_MULTIPLEXER")
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase());
+    match value.as_deref() {
+        Some("zellij") => {
+            if which("zellij").is_some() {
+                Multiplexer::Zellij
+            } else {
+                eprintln!(
+                    "[room] CC_CONNECT_MULTIPLEXER=zellij but `zellij` is not on PATH. \
+                     Falling back to the embedded TUI."
+                );
+                Multiplexer::None
+            }
         }
+        Some("tmux") => {
+            if which("tmux").is_some() {
+                Multiplexer::Tmux
+            } else {
+                eprintln!(
+                    "[room] CC_CONNECT_MULTIPLEXER=tmux but `tmux` is not on PATH. \
+                     Falling back to the embedded TUI."
+                );
+                Multiplexer::None
+            }
+        }
+        Some("auto") => {
+            if which("zellij").is_some() {
+                Multiplexer::Zellij
+            } else if which("tmux").is_some() {
+                Multiplexer::Tmux
+            } else {
+                Multiplexer::None
+            }
+        }
+        _ => Multiplexer::None,
     }
-    if which("zellij").is_some() {
-        return Multiplexer::Zellij;
-    }
-    if which("tmux").is_some() {
-        return Multiplexer::Tmux;
-    }
-    Multiplexer::None
 }
 
 /// Single zellij session shared across every cc-connect room. First
@@ -381,8 +411,9 @@ fn zellij_delete_session(name: &str) {
 /// magic incantation.
 fn print_exit_hint() {
     eprintln!("[room] tip:");
-    eprintln!("  • Quit zellij with Ctrl-q + y (tmux: Ctrl-b + d to detach).");
+    eprintln!("  • Quit: zellij = Ctrl-q + y, tmux = Ctrl-b + d (detach).");
     eprintln!("  • `cc-connect clear` stops every chat-daemon + host-bg.");
+    eprintln!("  • `cc-connect upgrade` pulls latest + rebuilds + reinstalls.");
     eprintln!("  • `cc-connect uninstall` reverses install.sh entirely.");
 }
 

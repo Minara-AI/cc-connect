@@ -56,6 +56,35 @@ scripts/smoke-test-bg.sh                   # background host-daemon path
 - **Domain-first naming.** New module names should reflect terms in @CONTEXT.md. If you need a new domain term, update CONTEXT.md in the same change. The `improve-codebase-architecture` and `grill-with-docs` skills enforce this — invoke them when in doubt.
 - **Tests over assertions.** Real bugs in this codebase have come from gossip ordering and hook concurrency, not from pure-function edge cases. Prefer integration smoke tests under `scripts/` over fine-grained mocks.
 
+## Release checklist (read before tagging or merging release-shaped PRs)
+
+Every release MUST keep `cc-connect uninstall` able to reverse the new
+install. The uninstall + upgrade flows promise users they can wipe a
+machine clean and start fresh; if a release adds new on-disk state but
+not the matching cleanup, every user upgrading after will accumulate
+dead files / settings forever.
+
+The cleanup surface lives in `crates/cc-connect/src/lifecycle.rs`:
+
+- **`INSTALLED_BIN_NAMES`** — every binary `install.sh` symlinks into
+  `~/.local/bin`. New binary in the workspace? Add it here (and to
+  `install.sh`'s symlink loop).
+- **`MCP_SERVER_KEY`** — the key used in `~/.claude.json::mcpServers`
+  and by `claude mcp add`. Keep `setup.rs` and `lifecycle.rs` in sync.
+- **`run_clear`** — stops every long-running daemon. New daemon
+  variant? Add a `list_running` + `run_stop` and call them here.
+- **`remove_hook_from_settings` / `remove_mcp_from_claude_json`** —
+  the JSON-mutation paths. New `~/.claude/settings.json` key written
+  during install (e.g. a new hook event)? Strip it here too.
+- **`run_uninstall` --purge** — wipes `~/.cc-connect/`. New persistent
+  file written outside that tree? Either move it inside, or add an
+  explicit removal step here.
+
+Every release-shaped PR (anything touching `install.sh`, `setup.rs`,
+or any new persistent file location) MUST include a corresponding
+update to `lifecycle.rs` and a test exercising the cleanup. Reviewers:
+look for a paired commit; reject if missing.
+
 ## Repository etiquette
 
 - **Commit messages**: `type(scope): subject`. Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`. Scopes are real components — `core`, `hook`, `mcp`, `tui`, `chat-ui`, `chat-daemon`, `install`, `room`, `security`, etc. Examples in `git log --oneline`.

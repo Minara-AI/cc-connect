@@ -356,6 +356,23 @@ Want to contribute? Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the dev setu
 
 Bugs and feature requests: [GitHub Issues](https://github.com/Minara-AI/cc-connect/issues/new/choose). Security: [private advisory](https://github.com/Minara-AI/cc-connect/security/advisories/new), not a public issue ([`SECURITY.md`](./SECURITY.md)).
 
+## Release process
+
+`cc-connect uninstall` and `cc-connect upgrade` are user-facing promises: a clean wipe and a clean reinstall. Honoring those promises is a release-time discipline.
+
+**Every release MUST keep the cleanup surface in sync with the install surface.** The cleanup lives in [`crates/cc-connect/src/lifecycle.rs`](./crates/cc-connect/src/lifecycle.rs); when a release adds anything to the install surface — a new binary, a new `~/.claude/settings.json` key, a new file under `~/.cc-connect/`, a new MCP tool that registers itself somewhere — the matching removal must land in `lifecycle.rs` in the same PR.
+
+Concretely, for every release-shaped PR (anything touching `install.sh`, `crates/cc-connect/src/setup.rs`, or persistent file paths), the reviewer checks:
+
+- Did `INSTALLED_BIN_NAMES` get the new binary?
+- Did `run_clear` get the new daemon's `run_stop`?
+- Did `remove_hook_from_settings` / `remove_mcp_from_claude_json` get the new JSON key?
+- Did `--purge` (or another explicit removal step) cover any new persistent file outside `~/.cc-connect/`?
+
+If yes for the additions in this PR, the cleanup landed. If no, reject.
+
+The contract is: a user who runs `cc-connect uninstall --purge` ends up with **zero** cc-connect-touched state on their machine, regardless of which version installed it. Without that, every upgrade silently accumulates dead config.
+
 ## License
 
 Dual-licensed under [MIT](./LICENSE-MIT) **OR** [Apache-2.0](./LICENSE-APACHE) at your option. Contributions are accepted under the same dual license; there is no separate CLA. Participants in project spaces are expected to follow the [Code of Conduct](./CODE_OF_CONDUCT.md).

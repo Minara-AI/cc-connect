@@ -131,6 +131,16 @@ pub enum Command {
         #[arg(long)]
         purge: bool,
     },
+    /// Pull latest source + rebuild + reinstall in one shot. Equivalent
+    /// to `git fetch && git pull && cc-connect uninstall && ./install.sh`
+    /// from the install clone, but never strips identity/nicknames so
+    /// you keep your stable Pubkey across upgrades. The `--yes` flag
+    /// skips the y/N confirmation.
+    Upgrade {
+        /// Skip the y/N confirmation after showing the incoming commits.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,5 +256,6 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Doctor => doctor::run(),
         Command::Clear { purge } => lifecycle::run_clear(purge),
         Command::Uninstall { purge } => lifecycle::run_uninstall(purge),
+        Command::Upgrade { yes } => lifecycle::run_upgrade(yes),
     }
 }
