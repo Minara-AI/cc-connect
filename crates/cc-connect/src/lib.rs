@@ -10,6 +10,7 @@ pub mod chat;
 pub mod chat_daemon;
 pub mod chat_session;
 pub mod doctor;
+pub mod gossip_debug;
 pub mod host;
 pub mod host_bg;
 pub mod launcher_paths;

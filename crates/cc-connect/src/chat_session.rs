@@ -444,10 +444,12 @@ async fn run_session(
         // §"Per-author flooding" — the limit is per identity, not per
         // human; sybil resistance is out of scope for v0.1.
         let mut rate_limiter = RateLimiter::new();
+        let debug_label = format!("tui Y={}", our_pubkey.chars().take(8).collect::<String>());
         while let Some(event) = receiver.next().await {
             let event = match event {
                 Ok(e) => e,
                 Err(e) => {
+                    crate::gossip_debug::log(&debug_label, &format!("stream-error: {e}"));
                     let _ = listener_display
                         .send(DisplayLine::Warn(format!(
                             "[chat] gossip stream error: {e}"
@@ -456,6 +458,7 @@ async fn run_session(
                     continue;
                 }
             };
+            crate::gossip_debug::log(&debug_label, &format!("recv {event:?}"));
             let payload: &[u8] = match &event {
                 Event::Received(m) => m.content.as_ref(),
                 _ => continue,
@@ -705,7 +708,21 @@ async fn run_session(
             }
         }
         let bytes = msg.to_canonical_json()?;
+        crate::gossip_debug::log(
+            &format!(
+                "tui Y={}",
+                pubkey_string.chars().take(8).collect::<String>()
+            ),
+            &format!("broadcast id={} bytes={}", msg.id, bytes.len()),
+        );
         if let Err(e) = sender.broadcast(Bytes::from(bytes)).await {
+            crate::gossip_debug::log(
+                &format!(
+                    "tui Y={}",
+                    pubkey_string.chars().take(8).collect::<String>()
+                ),
+                &format!("broadcast-failed: {e:#}"),
+            );
             let _ = display_tx
                 .send(DisplayLine::Warn(format!("[chat] broadcast failed: {e:#}")))
                 .await;

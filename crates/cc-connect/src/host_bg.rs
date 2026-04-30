@@ -28,6 +28,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use cc_connect_core::ticket::encode_room_code;
+use futures_lite::StreamExt;
 use iroh::{endpoint::RelayMode, Endpoint, RelayMap, SecretKey};
 use iroh_gossip::{
     net::{Gossip, GOSSIP_ALPN},
@@ -343,6 +344,33 @@ async fn daemon_async(relay: Option<&str>) -> Result<()> {
     // for the daemon's lifetime — gossip considers the topic membership
     // alive as long as any half of the handle exists.
     let _topic_handle = gossip.subscribe(topic, vec![]).await?;
+
+    // Optional gossip-event tracing for diagnosing mesh-forwarding bugs.
+    // OFF by default — production behaviour is the passive subscriber
+    // above (which has worked in earlier releases). When the env var is
+    // set, also spawn a debug-only drain task that mirrors gossip events
+    // to ~/.cc-connect/gossip-debug.log so a multi-peer reproduction can
+    // be reconstructed by sorting log lines from each machine by ts.
+    let _debug_drain: Option<tokio::task::JoinHandle<()>> = if crate::gossip_debug::enabled() {
+        let endpoint_id = endpoint.id();
+        let label = format!(
+            "host-bg X={}",
+            endpoint_id.to_string().chars().take(8).collect::<String>()
+        );
+        let dbg_handle = gossip.subscribe(topic, vec![]).await?;
+        Some(tokio::spawn(async move {
+            let (_sender, mut receiver) = dbg_handle.split();
+            while let Some(ev) = receiver.next().await {
+                let summary = match ev {
+                    Ok(e) => format!("recv {e:?}"),
+                    Err(e) => format!("stream-error: {e}"),
+                };
+                crate::gossip_debug::log(&label, &summary);
+            }
+        }))
+    } else {
+        None
+    };
 
     let our_addr = endpoint.addr();
     let payload = TicketPayload {
