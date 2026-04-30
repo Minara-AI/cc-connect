@@ -77,11 +77,25 @@ pub fn render(
         }
     }
 
-    // Scroll position. `chat_scroll` is "lines back from bottom" so 0
-    // tails the live feed (default) and PgUp grows it. We clamp into
-    // [0, max_offset] so we can never page off the top.
-    let total = lines.len() as u16;
+    // Scroll position. `chat_scroll` is "rows back from bottom" so 0
+    // tails the live feed and PgUp grows it. The Paragraph wraps long
+    // lines via Wrap{trim:false} which inflates row count above
+    // `lines.len()`; counting raw lines made PgUp dead-end before the
+    // actual top. Estimate visual rows by ceil(line_width / area_width)
+    // per line and use that as max_offset so PgUp can reach every row.
     let visible = chunks[0].height;
+    let wrap_width = chunks[0].width.max(1);
+    let mut visual_rows: u32 = 0;
+    for line in &lines {
+        let w = line.width() as u32;
+        let rows = if w == 0 {
+            1
+        } else {
+            w.div_ceil(wrap_width as u32)
+        };
+        visual_rows = visual_rows.saturating_add(rows);
+    }
+    let total = visual_rows.min(u16::MAX as u32) as u16;
     let max_offset = total.saturating_sub(visible);
     let scroll_y = max_offset.saturating_sub(tab.chat_scroll);
     let scrollback = Paragraph::new(lines)
