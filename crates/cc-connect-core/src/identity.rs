@@ -35,6 +35,27 @@ impl Identity {
     }
 
     fn load(path: &Path) -> Result<Self> {
+        // PROTOCOL.md §2: implementations SHOULD warn if the mode has
+        // drifted to anything wider than 0600. We do not refuse — that
+        // would brick a working install over a chmod accident — but the
+        // warning is the only signal a user gets short of running
+        // `cc-connect doctor`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(path) {
+                let mode = meta.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    eprintln!(
+                        "cc-connect: WARNING: {} has mode {:04o} (expected 0600); \
+                         tighten with `chmod 600 {}`",
+                        path.display(),
+                        mode,
+                        path.display()
+                    );
+                }
+            }
+        }
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let seed: [u8; SEED_LEN] = bytes.as_slice().try_into().map_err(|_| {
             anyhow::anyhow!("expected exactly {SEED_LEN} bytes in {}", path.display())
