@@ -21,6 +21,7 @@ use cc_connect_core::{
     identity::Identity,
     log_io,
     message::Message,
+    posix::ensure_secure_dir,
     rate_limit::{RateLimitDecision, RateLimiter},
     ticket::decode_room_code,
 };
@@ -121,9 +122,21 @@ impl MentionState {
 
     /// Record an @-mention. Buffer cap-evicts oldest; broadcast send is
     /// best-effort (no waiters → ignored).
+    ///
+    /// Mutex poison is treated as "ignore the panicked thread's mid-write
+    /// state and recover" via `into_inner` rather than `expect`. CLAUDE.md
+    /// hard rule: code paths the IPC server (and indirectly the hook)
+    /// reaches must never panic — a poison here would otherwise crash
+    /// the chat_session task and take the whole room offline for that
+    /// peer. The buffer is a simple ring of mentions; the worst case of
+    /// recovering a partial write is one duplicate or skipped mention,
+    /// which is harmless.
     fn push(&self, ev: MentionEvent) {
         {
-            let mut buf = self.recent.lock().expect("mention buffer poisoned");
+            let mut buf = self
+                .recent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if buf.len() >= MENTION_BUFFER_CAP {
                 buf.pop_front();
             }
@@ -138,7 +151,10 @@ impl MentionState {
     /// not buffered replay) or if the buffer holds nothing newer.
     fn snapshot_after(&self, cutoff: Option<&str>) -> Option<MentionEvent> {
         let cutoff = cutoff?;
-        let buf = self.recent.lock().expect("mention buffer poisoned");
+        let buf = self
+            .recent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         buf.iter().find(|e| e.id.as_str() > cutoff).cloned()
     }
 }
@@ -258,33 +274,71 @@ async fn run_session(
     let topic_handle = gossip.subscribe_and_join(topic, peer_ids).await?;
     let (sender, mut receiver) = topic_handle.split();
 
-    // 7. Backfill from the first peer (PROTOCOL.md §6.2).
-    let backfill_marker = if let Some(first_peer) = bootstrap_peers.first() {
-        if first_peer.id == endpoint.id() {
-            None
-        } else {
-            let files_dir = files_dir_for(&topic_id_hex);
-            match try_backfill_from(&endpoint, &store, first_peer, None, &log_path, &files_dir)
-                .await
-            {
-                BackfillOutcome::Filled { appended } if appended > 0 => Some(format!(
-                    "[chatroom] (backfilled {appended} message{} from peer)",
-                    if appended == 1 { "" } else { "s" }
-                )),
-                BackfillOutcome::Filled { .. } | BackfillOutcome::Empty => None,
-                BackfillOutcome::Timeout => {
-                    Some("[chatroom] (joined late, no history available)".to_string())
+    // 7. Backfill (PROTOCOL.md §6.2 + ADR-0002).
+    //
+    // PROTOCOL §6.2 mandates a 5-second per-attempt timeout AND a
+    // 10-second aggregate cap that holds regardless of how many peers
+    // were attempted. We walk every bootstrap peer (skipping self) with
+    // try_backfill_from (which already enforces the per-attempt 5s),
+    // stop on the first success, and bail when the aggregate budget is
+    // exhausted. Self-spoofed responses are dropped inside backfill.rs
+    // via the `pubkey_string` we pass through.
+    let backfill_marker = {
+        use std::time::{Duration, Instant};
+        const AGGREGATE_TIMEOUT: Duration = Duration::from_secs(10);
+        let started = Instant::now();
+        let files_dir = files_dir_for(&topic_id_hex);
+        let mut last_warn: Option<String> = None;
+        let mut outcome_marker: Option<Option<String>> = None;
+        let candidates: Vec<_> = bootstrap_peers
+            .iter()
+            .filter(|p| p.id != endpoint.id())
+            .collect();
+        for peer in &candidates {
+            if started.elapsed() >= AGGREGATE_TIMEOUT {
+                break;
+            }
+            let outcome = try_backfill_from(
+                &endpoint,
+                &store,
+                peer,
+                None,
+                &log_path,
+                &files_dir,
+                &pubkey_string,
+            )
+            .await;
+            match outcome {
+                BackfillOutcome::Filled { appended } if appended > 0 => {
+                    outcome_marker = Some(Some(format!(
+                        "[chatroom] (backfilled {appended} message{} from peer)",
+                        if appended == 1 { "" } else { "s" }
+                    )));
+                    break;
                 }
+                BackfillOutcome::Filled { .. } | BackfillOutcome::Empty => {
+                    outcome_marker = Some(None);
+                    break;
+                }
+                BackfillOutcome::Timeout => continue,
                 BackfillOutcome::Failed(msg) => {
-                    let _ = display_tx
-                        .send(DisplayLine::Warn(format!("[chat] backfill failed: {msg}")))
-                        .await;
-                    Some("[chatroom] (joined late, no history available)".to_string())
+                    last_warn = Some(msg);
+                    continue;
                 }
             }
         }
-    } else {
-        None
+        match outcome_marker {
+            Some(m) => m,
+            None if candidates.is_empty() => None,
+            None => {
+                if let Some(msg) = last_warn {
+                    let _ = display_tx
+                        .send(DisplayLine::Warn(format!("[chat] backfill failed: {msg}")))
+                        .await;
+                }
+                Some("[chatroom] (joined late, no history available)".to_string())
+            }
+        }
     };
 
     // 8. Active-rooms PID file (PROTOCOL §8 + ADR-0003).
@@ -863,13 +917,23 @@ pub(crate) async fn fetch_and_export_blob(
     Ok(())
 }
 
-fn pid_file_path(topic_id_hex: &str) -> Result<PathBuf> {
+/// Per-UID `$TMPDIR/cc-connect-<uid>/` root that holds the active-rooms PID
+/// directory and the IPC socket directory. Both subdirectories must be
+/// 0700 (PROTOCOL §8 strictness; ADR-0003); a hostile co-tenant who
+/// pre-creates them as symlinks could otherwise observe IPC traffic or
+/// hijack the active-room marker. `ensure_secure_dir` does the lstat-
+/// strict create for both the parent and the named subdir.
+fn cc_connect_uid_dir() -> PathBuf {
     let uid = rustix::process::geteuid().as_raw();
-    let dir = std::env::temp_dir()
-        .join(format!("cc-connect-{uid}"))
-        .join("active-rooms");
-    std::fs::create_dir_all(&dir).with_context(|| format!("create_dir_all {}", dir.display()))?;
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    std::env::temp_dir().join(format!("cc-connect-{uid}"))
+}
+
+fn pid_file_path(topic_id_hex: &str) -> Result<PathBuf> {
+    let parent = cc_connect_uid_dir();
+    ensure_secure_dir(&parent).with_context(|| format!("secure parent {}", parent.display()))?;
+    let dir = parent.join("active-rooms");
+    ensure_secure_dir(&dir)
+        .with_context(|| format!("secure active-rooms dir {}", dir.display()))?;
     Ok(dir.join(format!("{topic_id_hex}.active")))
 }
 
@@ -898,12 +962,17 @@ fn now_ms() -> i64 {
 
 /// Pick an IPC socket path + write the marker file pointing at it.
 ///
-/// Unix-domain sockets on macOS are capped at 104 bytes (SUN_LEN). A
-/// straight `$TMPDIR/cc-connect-$UID/sockets/<64-hex>.sock` path blows
-/// past that on macOS where `$TMPDIR` is `/var/folders/...`. So we put
-/// the actual socket under `/tmp` with an 8-hex random tag (~24 byte
-/// path) and store the absolute path in a marker file under HOME so
-/// cc-connect-mcp can find it.
+/// Layout: `/tmp/cc-connect-<uid>/sockets/<8hex>.sock`. The 0700 parent
+/// (`ensure_secure_dir`-enforced) means cross-UID processes cannot
+/// `connect()` the socket regardless of its own mode — they can't even
+/// traverse the directory. We additionally chmod the socket file to
+/// 0600 right after bind for defense-in-depth.
+///
+/// We hard-code `/tmp` rather than `std::env::temp_dir()` because the
+/// macOS user-temp prefix (`/var/folders/zz/<32-char hash>/T/`) burns
+/// ~50 bytes and Unix-domain sockets are capped at 104 bytes (SUN_LEN);
+/// a 64-hex topic_id under that prefix overflows. The pid-file dir,
+/// which has no SUN_LEN constraint, continues to use `temp_dir()`.
 fn ipc_socket_path(topic_id_hex: &str) -> Result<(PathBuf, PathBuf)> {
     let uid = rustix::process::geteuid().as_raw();
     let mut rand_buf = [0u8; 4];
@@ -913,7 +982,16 @@ fn ipc_socket_path(topic_id_hex: &str) -> Result<(PathBuf, PathBuf)> {
         use std::fmt::Write as _;
         let _ = write!(rand_hex, "{b:02x}");
     }
-    let socket_path = PathBuf::from(format!("/tmp/cc-{uid}-{rand_hex}.sock"));
+    // 0700-enforced parent. ensure_secure_dir refuses a pre-created
+    // symlink at this path (PROTOCOL §8 strictness applied to a sibling
+    // of active-rooms), and creates with mode 0700 atomically via
+    // rustix::fs::mkdir so there's no umask race.
+    let parent = PathBuf::from(format!("/tmp/cc-connect-{uid}"));
+    ensure_secure_dir(&parent).with_context(|| format!("secure parent {}", parent.display()))?;
+    let sockets_dir = parent.join("sockets");
+    ensure_secure_dir(&sockets_dir)
+        .with_context(|| format!("secure sockets dir {}", sockets_dir.display()))?;
+    let socket_path = sockets_dir.join(format!("{rand_hex}.sock"));
     let _ = std::fs::remove_file(&socket_path);
 
     let home = std::env::var_os("HOME")

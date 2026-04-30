@@ -145,6 +145,13 @@ pub enum BackfillOutcome {
 
 /// Try one peer. Will not retry. Caller decides whether to try the next peer
 /// or surface the joined-late marker.
+///
+/// `self_pubkey` is the receiver's own canonical Pubkey string; messages
+/// in the backfill response whose `author` equals it are dropped per
+/// PROTOCOL §4 ("self-spoof prevention"). A malicious responder could
+/// otherwise inject "history" claiming to be from us and our hook would
+/// happily render it as if we'd authored it ourselves. Pass an empty
+/// string to disable the check (tests only).
 pub async fn try_backfill_from(
     endpoint: &Endpoint,
     store: &MemStore,
@@ -152,10 +159,19 @@ pub async fn try_backfill_from(
     since: Option<String>,
     log_path: &Path,
     files_dir: &Path,
+    self_pubkey: &str,
 ) -> BackfillOutcome {
     match tokio::time::timeout(
         PER_ATTEMPT_TIMEOUT,
-        attempt(endpoint, store, peer, since, log_path, files_dir),
+        attempt(
+            endpoint,
+            store,
+            peer,
+            since,
+            log_path,
+            files_dir,
+            self_pubkey,
+        ),
     )
     .await
     {
@@ -173,6 +189,7 @@ async fn attempt(
     since: Option<String>,
     log_path: &Path,
     files_dir: &Path,
+    self_pubkey: &str,
 ) -> Result<BackfillOutcome> {
     let connection = endpoint
         .connect(peer.clone(), BACKFILL_ALPN)
@@ -214,6 +231,19 @@ async fn attempt(
 
     let mut appended = 0;
     for msg in response.messages {
+        // PROTOCOL §4 self-spoof prevention: drop any backfilled Message
+        // whose `author` equals the receiver's own Pubkey. Without this a
+        // malicious responder could inject "history" attributed to us and
+        // every Hook fire would render it as if we'd typed it. The check
+        // is intentionally cheap (string compare) and runs before the id
+        // de-dup so a fresh-id forgery is also caught.
+        if !self_pubkey.is_empty() && msg.author == self_pubkey {
+            eprintln!(
+                "[backfill] dropped self-authored message from peer (id={}) — possible spoof",
+                msg.id
+            );
+            continue;
+        }
         if existing.contains(&msg.id) {
             continue;
         }
