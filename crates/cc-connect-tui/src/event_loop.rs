@@ -159,6 +159,41 @@ pub async fn run(opts: RunOpts) -> Result<()> {
                 }
                 Some(Ok(CtEvent::Mouse(m))) => {
                     handle_mouse(&mut app, m);
+                    // Coalesce: a single trackpad swipe emits 30-60 Mouse
+                    // events. Drain anything already queued before yielding
+                    // back to the main loop so we redraw once per swipe
+                    // chunk instead of once per notch — vt100 + chat-pane
+                    // re-render is too costly at 60+Hz.
+                    while let Ok(Some(Ok(next))) = tokio::time::timeout(
+                        Duration::from_millis(0),
+                        crossterm_events.next(),
+                    )
+                    .await
+                    {
+                        match next {
+                            CtEvent::Mouse(more) => handle_mouse(&mut app, more),
+                            CtEvent::Resize(cols, rows) => {
+                                let claude_size = pane_size_for(PtySize {
+                                    rows,
+                                    cols,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                });
+                                for tab in app.tabs.tabs.values_mut() {
+                                    let _ = tab.pty_master.resize(claude_size);
+                                    tab.vt_parser
+                                        .screen_mut()
+                                        .set_size(claude_size.rows, claude_size.cols);
+                                }
+                            }
+                            // Don't coalesce key/display/pty events — those
+                            // need their own redraw to keep input responsive.
+                            other => {
+                                drop(other);
+                                break;
+                            }
+                        }
+                    }
                 }
                 Some(Err(_)) | None => break,
                 _ => {}
