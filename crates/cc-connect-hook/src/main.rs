@@ -90,6 +90,10 @@ fn run() -> Result<()> {
     let self_pubkey = read_self_pubkey();
     let room_summaries = read_room_summaries(&rooms_base, rooms.keys());
     let room_file_indexes = read_room_file_indexes(&rooms_base, rooms.keys());
+    // Owner-only-mentions preference: persisted at
+    // ~/.cc-connect/config.json (set via `cc-connect room start
+    // --owner-only-mentions`). Default `false` = sociable mode.
+    let owner_only = read_owner_only_mentions();
     // Quiet room (no unread messages anywhere) → skip the ~700 B header
     // alloc and the for-you scan. This is the common case for every
     // prompt; render() will return empty and we'd discard the header
@@ -98,7 +102,12 @@ fn run() -> Result<()> {
     let any_unread = rooms.values().any(|v| !v.is_empty());
     let header = if any_unread {
         let has_for_you = rooms.values().flatten().any(|m| {
-            hook_format::is_owner_directive(m, self_pubkey.as_deref(), self_nick.as_deref())
+            hook_format::is_owner_directive(
+                m,
+                self_pubkey.as_deref(),
+                self_nick.as_deref(),
+                owner_only,
+            )
         });
         build_orientation_header(&topic_ids, self_nick.as_deref(), has_for_you)
     } else {
@@ -113,6 +122,7 @@ fn run() -> Result<()> {
         room_file_indexes: &room_file_indexes,
         self_pubkey: self_pubkey.as_deref(),
         external_prefix_bytes: header.len(),
+        owner_only_mentions: owner_only,
     });
     let output = if body.is_empty() {
         String::new()
@@ -391,6 +401,18 @@ fn read_room_file_indexes<'a, I: Iterator<Item = &'a String>>(
         }
     }
     out
+}
+
+/// Read `~/.cc-connect/config.json::owner_only_mentions`. Returns
+/// `false` (sociable default) when missing or unreadable. Set this via
+/// `cc-connect room start --owner-only-mentions`.
+fn read_owner_only_mentions() -> bool {
+    let path = home_dir().join(".cc-connect").join("config.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("owner_only_mentions").and_then(|x| x.as_bool()))
+        .unwrap_or(false)
 }
 
 /// Read `~/.cc-connect/config.json::self_nick`. Returns `None` on any

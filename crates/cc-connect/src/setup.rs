@@ -404,6 +404,13 @@ struct ConnectConfig {
     /// emitted as the v0.2 `nick` field on outgoing Messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     self_nick: Option<String>,
+    /// When `Some(true)`, the embedded Claude only treats @-mentions
+    /// authored by the owning human as `for-you` directives — peer
+    /// @-mentions still render verbatim but never auto-trigger a reply
+    /// or `cc_wait_for_mention` wakeup. Default (`None` or `Some(false)`)
+    /// is the more sociable rule: any peer can ping our Claude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_only_mentions: Option<bool>,
 }
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -430,8 +437,10 @@ pub fn ensure_relay_choice(provided: Option<&str>) -> Result<Option<String>> {
         _ => {}
     }
     let answer = prompt_relay_choice()?;
-    // Preserve any existing self_nick when we rewrite the config.
+    // Preserve any existing self_nick / owner_only_mentions when we
+    // rewrite the config — only the relay_* fields change here.
     let preserved_nick = cfg.self_nick.clone();
+    let preserved_owner_only = cfg.owner_only_mentions;
     let (relay_mode, relay_url, returned) = match answer {
         RelayChoice::N0 => (Some("n0".to_string()), None, None),
         RelayChoice::Custom(url) => (Some("custom".to_string()), Some(url.clone()), Some(url)),
@@ -441,6 +450,7 @@ pub fn ensure_relay_choice(provided: Option<&str>) -> Result<Option<String>> {
         relay_mode,
         relay_url,
         self_nick: preserved_nick,
+        owner_only_mentions: preserved_owner_only,
     };
     write_config(&cfg_path, &new_cfg)?;
     Ok(returned)
@@ -503,6 +513,36 @@ fn write_config(path: &Path, cfg: &ConnectConfig) -> Result<()> {
     std::fs::write(path, raw)?;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     Ok(())
+}
+
+// ---- owner-only-mentions toggle -------------------------------------------
+
+/// Persist `~/.cc-connect/config.json::owner_only_mentions = <flag>`.
+/// Used by `cc-connect room start --owner-only-mentions[=true|false]`.
+/// Idempotent. Other config fields are preserved.
+pub fn set_owner_only_mentions(flag: bool) -> Result<()> {
+    let cfg_path = config_path();
+    let mut cfg = read_config(&cfg_path).unwrap_or_default();
+    cfg.owner_only_mentions = Some(flag);
+    write_config(&cfg_path, &cfg)?;
+    let label = if flag {
+        "ON (only my @-mentions wake my Claude)"
+    } else {
+        "OFF (any peer's @-mention wakes my Claude)"
+    };
+    println!("[setup] owner-only-mentions: {label} (saved)");
+    Ok(())
+}
+
+/// Read the persisted owner-only-mentions preference. Returns `false`
+/// (sociable default) when missing or unreadable. Available to hook +
+/// chat_session via the public re-export below.
+pub fn read_owner_only_mentions_pref() -> bool {
+    let cfg_path = config_path();
+    read_config(&cfg_path)
+        .ok()
+        .and_then(|c| c.owner_only_mentions)
+        .unwrap_or(false)
 }
 
 // ---- prompt helpers --------------------------------------------------------

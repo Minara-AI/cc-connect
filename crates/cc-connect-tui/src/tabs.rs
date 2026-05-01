@@ -159,6 +159,7 @@ pub async fn spawn_tab(id: TabId, args: SpawnTabArgs, io: &TabIo) -> Result<Room
         ticket: args.ticket.clone(),
         no_relay: args.no_relay,
         relay: args.relay.clone(),
+        owner_only_mentions: cc_connect::setup::read_owner_only_mentions_pref(),
     };
     let mut chat_handle = chat_session::spawn(cfg)
         .await

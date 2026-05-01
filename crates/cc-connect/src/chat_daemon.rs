@@ -297,6 +297,7 @@ async fn daemon_async(ticket: &str, no_relay: bool, relay: Option<&str>) -> Resu
         ticket: ticket.to_string(),
         no_relay,
         relay: relay.map(|s| s.to_string()),
+        owner_only_mentions: crate::setup::read_owner_only_mentions_pref(),
     };
     let mut handle = chat_session::spawn(cfg)
         .await

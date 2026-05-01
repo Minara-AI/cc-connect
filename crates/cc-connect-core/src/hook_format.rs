@@ -38,14 +38,20 @@ pub struct HookInput<'a> {
     /// still trigger the mark).
     pub self_nick: Option<&'a str>,
     /// Owner Pubkey (base32, the `pubkey_string()` form). Used to enforce
-    /// the owner-only @-mention rule: a `for-you` tag fires ONLY when the
-    /// message was authored by the owning human (i.e. `msg.author ==
-    /// self_pubkey` AND `msg.nick` is the human form, not `<self>-cc`).
-    /// Peer @-mentions remain visible (the chat lines render verbatim) but
-    /// don't carry the priority directive. `None` disables owner gating —
-    /// then `for-you` falls back to the legacy "anyone-can-ping" rule, so
-    /// older callers continue to work.
+    /// the owner-only @-mention rule when `owner_only_mentions` is true:
+    /// a `for-you` tag fires ONLY when the message was authored by the
+    /// owning human (i.e. `msg.author == self_pubkey` AND `msg.nick` is
+    /// the human form, not `<self>-cc`). Peer @-mentions remain visible
+    /// (the chat lines render verbatim) but don't carry the priority
+    /// directive. `None` for `self_pubkey` disables owner gating
+    /// regardless of `owner_only_mentions` — used by tests / older
+    /// callers that don't know the receiver's identity.
     pub self_pubkey: Option<&'a str>,
+    /// User-controlled toggle (per-machine, persisted at
+    /// `~/.cc-connect/config.json::owner_only_mentions`). When `false`
+    /// (default), any peer @-mentioning this Claude triggers a `for-you`
+    /// tag. When `true`, only the owning human's @-mentions do.
+    pub owner_only_mentions: bool,
     /// topic_id_hex → markdown summary text. Optional per-room rolling
     /// summary written by Claude via the MCP `cc_save_summary` tool.
     /// Injected ahead of the verbatim chat lines so Claude can pick up
@@ -94,6 +100,7 @@ pub fn render(input: &HookInput) -> String {
                 multi_room,
                 input.self_nick,
                 input.self_pubkey,
+                input.owner_only_mentions,
             )
         })
         .collect();
@@ -209,6 +216,7 @@ fn tail_lines_within_budget(s: &str, max: usize) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_line(
     topic: &str,
     msg: &Message,
@@ -217,14 +225,14 @@ fn format_line(
     multi_room: bool,
     self_nick: Option<&str>,
     self_pubkey: Option<&str>,
+    owner_only_mentions: bool,
 ) -> String {
     let nick = nick_for(nicknames, msg);
     let time = format_utc_hhmm(msg.ts);
-    // for-you tag: under the owner-only rule, fires only when the message
-    // came from this Claude's owning human (not from peers, not from the
-    // AI's own broadcast). Without `self_pubkey` we degrade to the legacy
-    // "anyone-can-ping" rule so older callers / tests still work.
-    let mention = is_owner_directive(msg, self_pubkey, self_nick);
+    // for-you tag: switched by owner_only_mentions (sociable / strict).
+    // Without `self_pubkey` we degrade to the legacy "anyone-can-ping"
+    // rule so older callers / tests still work.
+    let mention = is_owner_directive(msg, self_pubkey, self_nick, owner_only_mentions);
     let mention_tag = if mention { "for-you " } else { "" };
     let prefix = if multi_room {
         let tag = topic
@@ -256,46 +264,57 @@ fn format_line(
     }
 }
 
-/// Owner-only @-mention rule.
+/// `for-you` directive rule.
 ///
 /// Returns `true` iff `msg` should carry the `for-you` priority tag.
-/// Conditions, all of which must hold:
 ///
-///   1. `self_pubkey` is provided AND `msg.author == self_pubkey`. Peer
-///      @-mentions are deliberately NOT counted as priority directives —
-///      under cc-connect's social model only the owning human can drive
-///      their own AI. Peers can still see the line render verbatim
-///      (non-`for-you`) so the AI can decide whether to volunteer a reply.
-///   2. `msg.nick` does NOT end with the `-cc` AI-suffix. The chat session
-///      brands MCP-driven sends as `<self>-cc` so peers can tell the AI
-///      apart from the human; we use that same suffix here to keep the
-///      AI's own `@cc` broadcasts from re-triggering itself.
-///   3. The body actually mentions self (`mentions_self` matches).
+/// Two modes, switched by `owner_only_mentions`:
 ///
-/// `self_pubkey: None` falls back to the legacy "anyone can ping" rule so
-/// existing callers / tests that don't carry a pubkey still get the old
-/// behaviour. Production callers (the hook) MUST pass `self_pubkey`.
+/// **Sociable mode (default, `owner_only_mentions=false`)**: any peer
+/// @-mentioning self triggers `for-you`, except for our own AI's
+/// broadcasts (nick ends in `-cc`) — that filter prevents an `@cc` in
+/// our AI's own reply from waking itself in a loop.
+///
+/// **Owner-only mode (`owner_only_mentions=true`)**: only the owning
+/// human's @-mentions trigger `for-you`. Peer @-mentions render
+/// verbatim but never auto-direct our Claude. Use this when you don't
+/// want strangers' AIs (or your peers) able to ping yours.
+///
+/// `self_pubkey: None` falls back to the legacy "anyone can ping" rule
+/// regardless of `owner_only_mentions` — covers tests and any caller
+/// that doesn't know who the receiver is.
 pub fn is_owner_directive(
     msg: &Message,
     self_pubkey: Option<&str>,
     self_nick: Option<&str>,
+    owner_only_mentions: bool,
 ) -> bool {
     if !mentions_self(&msg.body, self_nick) {
         return false;
+    }
+    // Always skip our own AI's `<self>-cc`-tagged broadcasts so the
+    // AI doesn't auto-trigger itself.
+    if let Some(nick) = msg.nick.as_deref() {
+        if nick.ends_with("-cc") {
+            // …but only if this AI is *us*. A peer's `<peer>-cc` AI
+            // pinging us is a real wake signal in sociable mode.
+            if let Some(pk) = self_pubkey {
+                if msg.author == pk {
+                    return false;
+                }
+            } else {
+                // Legacy callers without pubkey context: keep the old
+                // behaviour of skipping any `-cc`-tagged message.
+                return false;
+            }
+        }
     }
     let Some(pk) = self_pubkey else {
         // Legacy mode: any mention of self counts.
         return true;
     };
-    if msg.author != pk {
+    if owner_only_mentions && msg.author != pk {
         return false;
-    }
-    // The AI's own MCP-driven sends carry a `<base>-cc` suffix on `nick`.
-    // Anything ending in `-cc` is the AI form — skip to break the loop.
-    if let Some(nick) = msg.nick.as_deref() {
-        if nick.ends_with("-cc") {
-            return false;
-        }
     }
     true
 }
@@ -512,6 +531,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert_eq!(out, "");
     }
@@ -529,6 +549,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert_eq!(out, "");
     }
@@ -553,6 +574,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert_eq!(out, "[chatroom @alice 00:00Z] hi\n");
     }
@@ -571,6 +593,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert_eq!(out, "[chatroom @hnvcppgo 00:00Z] x\n");
     }
@@ -590,6 +613,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         // \n→?, \t→?, é (2 bytes 0xc3 0xa9) → 2× '?' per byte-for-byte rule.
         assert!(out.contains("@al?ice???"), "got: {out}");
@@ -610,6 +634,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert!(
             out.contains("a b c é d"),
@@ -654,6 +679,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         let expected = "[chatroom aaaaaa @alice 00:00Z] from A\n\
              [chatroom bbbbbb @bob 00:00Z] from B\n";
@@ -684,6 +710,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3);
@@ -713,6 +740,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
 
         assert!(
@@ -762,6 +790,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 2048, // pretend caller will prepend 2 KiB.
+            owner_only_mentions: false,
         });
         // Concatenated cap: render output + the 2 KiB the caller adds.
         assert!(
@@ -800,6 +829,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: HOOK_OUTPUT_BUDGET,
+            owner_only_mentions: false,
         });
         assert!(
             out.is_empty(),
@@ -838,6 +868,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert!(!out.starts_with("[chatroom] ("));
     }
@@ -856,6 +887,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert_eq!(out, "[chatroom @alice 00:00Z] \n");
     }
@@ -886,6 +918,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None,
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         let expected_path = format!(
             "/var/tmp/cc-test/rooms/{topic}/files/{}-design.svg",
@@ -977,6 +1010,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: None, // legacy: no owner gating
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert!(
             out.starts_with("[chatroom for-you @alice 00:00Z]"),
@@ -984,13 +1018,11 @@ mod tests {
         );
     }
 
-    /// Owner-only rule: a peer @-mentioning us (`@bob`) MUST NOT carry
-    /// the `for-you` tag, because under cc-connect's social model only
-    /// the owning human can drive their own AI.
+    /// Owner-only rule (`owner_only_mentions=true`): a peer @-mentioning
+    /// us MUST NOT carry the `for-you` tag.
     #[test]
-    fn owner_rule_strips_for_you_when_author_is_peer() {
+    fn owner_only_strips_for_you_when_author_is_peer() {
         let nm = nicks(&[(A_PUBKEY, "alice"), (B_PUBKEY, "bob")]);
-        // Owner is bob (B_PUBKEY). The mention is authored by alice (A_PUBKEY).
         let m = make(&ulid(1), A_PUBKEY, 0, "hey @bob can you handle this?");
         let rooms = one_room("aabb11", vec![m]);
         let out = render(&HookInput {
@@ -1002,14 +1034,38 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: Some(B_PUBKEY),
             external_prefix_bytes: 0,
+            owner_only_mentions: true,
         });
         assert!(
             !out.contains("for-you"),
-            "peer @-mention MUST NOT be tagged for-you under owner rule, got: {out}"
+            "peer @-mention MUST NOT be tagged for-you in owner-only mode, got: {out}"
         );
-        // The line still renders verbatim — visibility is unchanged, only
-        // the priority directive is gated.
         assert!(out.contains("@alice"), "peer line still rendered: {out}");
+    }
+
+    /// Sociable rule (default, `owner_only_mentions=false`): a peer
+    /// @-mentioning us DOES carry `for-you` so the embedded Claude
+    /// answers. This is the new default (anyone can ping anyone's AI).
+    #[test]
+    fn sociable_keeps_for_you_when_author_is_peer() {
+        let nm = nicks(&[(A_PUBKEY, "alice"), (B_PUBKEY, "bob")]);
+        let m = make(&ulid(1), A_PUBKEY, 0, "hey @bob can you handle this?");
+        let rooms = one_room("aabb11", vec![m]);
+        let out = render(&HookInput {
+            rooms: &rooms,
+            nicknames: &nm,
+            rooms_base: std::path::Path::new("/tmp/cc-connect-test-rooms"),
+            self_nick: Some("bob"),
+            room_summaries: empty_map(),
+            room_file_indexes: empty_map(),
+            self_pubkey: Some(B_PUBKEY),
+            external_prefix_bytes: 0,
+            owner_only_mentions: false,
+        });
+        assert!(
+            out.contains("for-you"),
+            "peer @-mention MUST be for-you in sociable mode, got: {out}"
+        );
     }
 
     /// Owner's own typed @-mention DOES carry the `for-you` tag — this
@@ -1031,6 +1087,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: Some(B_PUBKEY),
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert!(
             out.contains("for-you"),
@@ -1056,6 +1113,7 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: Some(B_PUBKEY),
             external_prefix_bytes: 0,
+            owner_only_mentions: false,
         });
         assert!(
             !out.contains("for-you"),
@@ -1063,10 +1121,11 @@ mod tests {
         );
     }
 
-    /// Universal tokens (`@all`, `@cc`, etc.) from a peer also fall under
-    /// the owner rule — peers can't broadcast-command our AI.
+    /// Owner-only mode: universal tokens (`@all`, `@cc`, etc.) from a
+    /// peer MUST NOT be tagged `for-you` either — peers can't
+    /// broadcast-command our AI when owner-only is on.
     #[test]
-    fn owner_rule_strips_for_you_for_peer_at_all() {
+    fn owner_only_strips_for_you_for_peer_at_all() {
         let nm = nicks(&[(A_PUBKEY, "alice"), (B_PUBKEY, "bob")]);
         let m = make(&ulid(1), A_PUBKEY, 0, "@all standup in 5");
         let rooms = one_room("aabb11", vec![m]);
@@ -1079,10 +1138,11 @@ mod tests {
             room_file_indexes: empty_map(),
             self_pubkey: Some(B_PUBKEY),
             external_prefix_bytes: 0,
+            owner_only_mentions: true,
         });
         assert!(
             !out.contains("for-you"),
-            "peer-broadcast `@all` MUST NOT be tagged for-you under owner rule, got: {out}"
+            "peer-broadcast `@all` MUST NOT be for-you in owner-only mode, got: {out}"
         );
     }
 }

@@ -50,6 +50,13 @@ pub struct ChatSessionConfig {
     pub ticket: String,
     pub no_relay: bool,
     pub relay: Option<String>,
+    /// Per-machine policy: when `true`, only the owning human's typed
+    /// @-mentions wake `cc_wait_for_mention`. When `false` (default),
+    /// peer @-mentions also wake the embedded Claude — anyone can ping
+    /// anyone's AI in the room. Mirrors the `for-you` rule the hook
+    /// applies. Read from `~/.cc-connect/config.json::owner_only_mentions`
+    /// by the launcher.
+    pub owner_only_mentions: bool,
 }
 
 /// One renderable unit emitted by the running session.
@@ -456,6 +463,8 @@ async fn run_session(
     let our_pubkey = pubkey_string.clone();
     let listener_display = display_tx.clone();
     let listener_self_nick = self_nick.clone();
+    let listener_mention_state = mention_state.clone();
+    let listener_owner_only = cfg.owner_only_mentions;
     let listener_handle = tokio::task::spawn(async move {
         let mut listener_log = match log_io::open_or_create_log(&listener_log_path) {
             Ok(f) => f,
@@ -577,13 +586,27 @@ async fn run_session(
             } else {
                 msg.body.replace(['\n', '\r', '\t'], " ")
             };
-            // mentions_me here is purely the VISUAL flag (UI styles peer
-            // @-mentions in red and tags them `(@me)` so the user can see
-            // someone tried to reach their AI). It is intentionally NOT a
-            // wake signal — under the owner-only rule, peer @-mentions
-            // must not auto-trigger our embedded Claude. Owner-driven
-            // wake-ups are pushed from the send path instead.
             let mentions_me = line_mentions_me(&body, listener_self_nick.as_deref());
+            // Wake `cc_wait_for_mention` on peer @-mentions when the
+            // user has opted into the sociable rule (default: any peer
+            // can ping our Claude). owner-only mode (`--owner-only-mentions`
+            // at room start, persisted in config.json) disables this —
+            // only the owning human's typed @-mentions wake; the
+            // visual `(@me)` tag still fires either way. Skip the AI's
+            // own `<peer>-cc` form to avoid a feedback loop with peers'
+            // bots.
+            if mentions_me
+                && !listener_owner_only
+                && msg.kind != cc_connect_core::message::KIND_FILE_DROP
+                && !nick_short.ends_with("-cc")
+            {
+                listener_mention_state.push(MentionEvent {
+                    id: msg.id.clone(),
+                    ts: msg.ts,
+                    nick: nick_short.clone(),
+                    body: body.clone(),
+                });
+            }
             let _ = listener_display
                 .send(DisplayLine::Incoming {
                     nick_short,

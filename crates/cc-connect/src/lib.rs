@@ -178,6 +178,14 @@ pub enum RoomCmd {
         /// Override / set the saved display name. Persists.
         #[arg(long, value_name = "NAME")]
         nick: Option<String>,
+        /// Persist the per-machine `owner_only_mentions` preference.
+        /// Default OFF: any peer's @-mention can wake your Claude. ON:
+        /// only your own typed @-mentions wake your Claude (peer
+        /// @-mentions still render but never auto-reply). Persists to
+        /// `~/.cc-connect/config.json`. Use `--owner-only-mentions=false`
+        /// to clear an earlier ON.
+        #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+        owner_only_mentions: Option<bool>,
         /// Args forwarded to `claude`. Use `--` to separate.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -190,6 +198,9 @@ pub enum RoomCmd {
         /// Override / set the saved display name. Persists.
         #[arg(long, value_name = "NAME")]
         nick: Option<String>,
+        /// Same per-machine preference as `room start --owner-only-mentions`.
+        #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+        owner_only_mentions: Option<bool>,
         /// Args forwarded to `claude`. Use `--` to separate.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -226,14 +237,26 @@ pub fn run(cli: Cli) -> Result<()> {
             RoomCmd::Start {
                 relay,
                 nick,
+                owner_only_mentions,
                 claude_args,
-            } => room::run_start(relay.as_deref(), nick.as_deref(), &claude_args),
+            } => {
+                if let Some(flag) = owner_only_mentions {
+                    setup::set_owner_only_mentions(flag)?;
+                }
+                room::run_start(relay.as_deref(), nick.as_deref(), &claude_args)
+            }
             RoomCmd::Join {
                 ticket,
                 relay,
                 nick,
+                owner_only_mentions,
                 claude_args,
-            } => room::run_join(&ticket, relay.as_deref(), nick.as_deref(), &claude_args),
+            } => {
+                if let Some(flag) = owner_only_mentions {
+                    setup::set_owner_only_mentions(flag)?;
+                }
+                room::run_join(&ticket, relay.as_deref(), nick.as_deref(), &claude_args)
+            }
         },
         Command::HostBg { cmd } => match cmd {
             HostBgCmd::Start { relay } => host_bg::run_start(relay.as_deref()),

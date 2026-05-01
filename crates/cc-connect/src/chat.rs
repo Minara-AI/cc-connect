@@ -25,6 +25,7 @@ async fn run_async(ticket_str: &str, no_relay: bool, relay: Option<&str>) -> Res
         ticket: ticket_str.to_string(),
         no_relay,
         relay: relay.map(|s| s.to_string()),
+        owner_only_mentions: crate::setup::read_owner_only_mentions_pref(),
     };
     let mut handle = chat_session::spawn(cfg).await?;
 
