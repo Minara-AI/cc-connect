@@ -80,8 +80,14 @@ pub fn ensure_secure_dir(path: &Path) -> Result<()> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             use rustix::fs::{mkdir, Mode};
-            mkdir(path, Mode::from_bits_truncate(0o700))
-                .map_err(|e| anyhow!("mkdir {} (mode 0700): {e}", path.display()))?;
+            match mkdir(path, Mode::from_bits_truncate(0o700)) {
+                Ok(()) => {}
+                // Race: a concurrent process created the dir between our
+                // lstat and our mkdir. Re-validate via recursion — the
+                // existing-dir branch above will check mode + symlink.
+                Err(e) if e == rustix::io::Errno::EXIST => return ensure_secure_dir(path),
+                Err(e) => bail!("mkdir {} (mode 0700): {e}", path.display()),
+            }
         }
         Err(e) => return Err(anyhow!("lstat {}: {e}", path.display())),
     }

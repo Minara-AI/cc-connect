@@ -397,9 +397,15 @@ async fn run_session(
         let ipc_log_path = log_path.clone();
         let ipc_files_dir = files_dir_for(&topic_id_hex);
         let ipc_mention_state = mention_state.clone();
+        let ipc_paths = _ipc_guard.paths();
+        let ipc_display = display_tx.clone();
+        let ipc_topic = topic_id_hex.clone();
         Some(tokio::spawn(async move {
             ipc_server_loop(
                 listener,
+                ipc_topic,
+                ipc_paths,
+                ipc_display,
                 local_input_tx,
                 mcp_input_tx,
                 ipc_log_path,
@@ -1081,62 +1087,143 @@ fn ipc_socket_path(topic_id_hex: &str) -> Result<(PathBuf, PathBuf)> {
 
 /// Removes both the unix socket file and the HOME-side marker pointing at
 /// it on Drop so the next chat session can rebind cleanly.
+///
+/// The paths are held behind a `Mutex` so the IPC server's watchdog can
+/// swap them when it rebinds after an external `/tmp/cc-connect-$UID/`
+/// wipe. Drop reads whichever pair is current at unwind time, not the
+/// originals — otherwise a rebind would leak the new socket file.
 struct IpcSocketGuard {
-    socket_path: PathBuf,
-    marker_path: PathBuf,
+    paths: std::sync::Arc<std::sync::Mutex<(PathBuf, PathBuf)>>,
 }
 
 impl IpcSocketGuard {
     fn new(socket_path: &Path, marker_path: &Path) -> Self {
         Self {
-            socket_path: socket_path.to_path_buf(),
-            marker_path: marker_path.to_path_buf(),
+            paths: std::sync::Arc::new(std::sync::Mutex::new((
+                socket_path.to_path_buf(),
+                marker_path.to_path_buf(),
+            ))),
         }
+    }
+
+    /// Hand the watchdog a shared handle so it can publish a new
+    /// (socket, marker) pair after rebinding.
+    fn paths(&self) -> std::sync::Arc<std::sync::Mutex<(PathBuf, PathBuf)>> {
+        self.paths.clone()
     }
 }
 
 impl Drop for IpcSocketGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(&self.marker_path);
+        if let Ok(p) = self.paths.lock() {
+            let _ = std::fs::remove_file(&p.0);
+            let _ = std::fs::remove_file(&p.1);
+        }
     }
 }
+
+/// How often the IPC server stats its bound socket file. If the path is
+/// gone (e.g. `/tmp/cc-connect-$UID/` was wiped by `cc-connect clear`,
+/// the OS swept `/tmp`, or this process was SIGKILLed and a new one
+/// restarted in a wiped tree), the server rebinds at a fresh random
+/// suffix and overwrites the marker file the MCP reads.
+const IPC_SOCKET_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Drives one accepted IPC client.
 ///
 /// Wire format: newline-delimited JSON, one command per line, one
 /// response per command. Responses are a single JSON object with
 /// `{"ok": bool}` plus optional `data` / `err`.
+#[allow(clippy::too_many_arguments)]
 async fn ipc_server_loop(
     listener: tokio::net::UnixListener,
+    topic_id_hex: String,
+    paths: std::sync::Arc<std::sync::Mutex<(PathBuf, PathBuf)>>,
+    display_tx: mpsc::Sender<DisplayLine>,
     local_input_tx: mpsc::Sender<String>,
     mcp_input_tx: mpsc::Sender<String>,
     log_path: PathBuf,
     files_dir: PathBuf,
     mention_state: std::sync::Arc<MentionState>,
 ) {
+    let mut listener = listener;
+    let mut watchdog = tokio::time::interval(IPC_SOCKET_WATCHDOG_INTERVAL);
+    // Burn the immediate first tick so the watchdog doesn't fire before
+    // we've even had a chance to accept anything.
+    watchdog.tick().await;
     loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-        let local_input_tx = local_input_tx.clone();
-        let mcp_input_tx = mcp_input_tx.clone();
-        let log_path = log_path.clone();
-        let files_dir = files_dir.clone();
-        let mention_state = mention_state.clone();
-        tokio::spawn(async move {
-            handle_ipc_client(
-                stream,
-                local_input_tx,
-                mcp_input_tx,
-                log_path,
-                files_dir,
-                mention_state,
-            )
-            .await
-        });
+        tokio::select! {
+            accept_result = listener.accept() => {
+                let (stream, _) = match accept_result {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                let local_input_tx = local_input_tx.clone();
+                let mcp_input_tx = mcp_input_tx.clone();
+                let log_path = log_path.clone();
+                let files_dir = files_dir.clone();
+                let mention_state = mention_state.clone();
+                tokio::spawn(async move {
+                    handle_ipc_client(
+                        stream,
+                        local_input_tx,
+                        mcp_input_tx,
+                        log_path,
+                        files_dir,
+                        mention_state,
+                    )
+                    .await
+                });
+            }
+            _ = watchdog.tick() => {
+                let current_socket = {
+                    let p = paths.lock().expect("ipc paths mutex poisoned");
+                    p.0.clone()
+                };
+                if current_socket.exists() {
+                    continue;
+                }
+                // Socket file is gone but our process is still alive —
+                // /tmp/cc-connect-$UID/ got wiped externally. Rebind at a
+                // fresh random path and overwrite the marker so the next
+                // MCP `connect()` resolves to the new socket.
+                match rebind_ipc_listener(&topic_id_hex) {
+                    Ok((new_listener, new_socket, new_marker)) => {
+                        {
+                            let mut p =
+                                paths.lock().expect("ipc paths mutex poisoned");
+                            *p = (new_socket.clone(), new_marker);
+                        }
+                        listener = new_listener;
+                        let _ = display_tx
+                            .send(DisplayLine::Warn(format!(
+                                "[chat] IPC socket vanished; rebound at {}",
+                                new_socket.display()
+                            )))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = display_tx
+                            .send(DisplayLine::Warn(format!(
+                                "[chat] IPC socket vanished; rebind failed: {e:#}"
+                            )))
+                            .await;
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Pick a fresh socket path, bind a new `UnixListener`, chmod 0600, and
+/// overwrite the marker file. Used by the IPC server's watchdog to recover
+/// from an external `/tmp/cc-connect-$UID/` wipe.
+fn rebind_ipc_listener(topic_id_hex: &str) -> Result<(tokio::net::UnixListener, PathBuf, PathBuf)> {
+    let (socket_path, marker_path) = ipc_socket_path(topic_id_hex)?;
+    let listener = tokio::net::UnixListener::bind(&socket_path)
+        .with_context(|| format!("rebind {}", socket_path.display()))?;
+    let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
+    Ok((listener, socket_path, marker_path))
 }
 
 async fn handle_ipc_client(
@@ -1609,5 +1696,80 @@ mod mention_state_tests {
         let st = MentionState::new();
         st.push(ev("01H0000000000000000000000A", "x"));
         // No assertion needed — getting here is the point.
+    }
+}
+
+#[cfg(test)]
+mod ipc_guard_tests {
+    use super::*;
+
+    /// `IpcSocketGuard::drop` MUST remove whichever socket+marker pair the
+    /// watchdog last published — not the originals. Otherwise a successful
+    /// rebind would leak the new socket file on shutdown. This is the
+    /// invariant the `Arc<Mutex<>>` swap exists to enforce.
+    ///
+    /// Hermetic: uses `tempfile::tempdir`, never touches
+    /// `/tmp/cc-connect-$UID/`, so it's safe to run alongside
+    /// `lifecycle::tests::purge_tmp_uid_dir_handles_missing_and_present`
+    /// under `cargo test --workspace`. The real bind+listen path is
+    /// covered by `scripts/smoke-test-mcp.sh`.
+    #[test]
+    fn drop_removes_current_paths_not_originals_after_rebind_swap() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let orig_sock = tmp.path().join("orig.sock");
+        let orig_marker = tmp.path().join("orig.marker");
+        let new_sock = tmp.path().join("new.sock");
+        let new_marker = tmp.path().join("new.marker");
+        // Stand-in files — guard only cares about paths, not file kind.
+        std::fs::write(&orig_sock, b"").unwrap();
+        std::fs::write(&orig_marker, b"").unwrap();
+        std::fs::write(&new_sock, b"").unwrap();
+        std::fs::write(&new_marker, b"").unwrap();
+
+        let guard = IpcSocketGuard::new(&orig_sock, &orig_marker);
+        // Watchdog rebound: publish the new pair through the shared handle.
+        {
+            let paths = guard.paths();
+            let mut p = paths.lock().unwrap();
+            *p = (new_sock.clone(), new_marker.clone());
+        }
+        drop(guard);
+
+        // Originals untouched — the rebind path itself is responsible for
+        // unlinking the dead socket; Drop is only the safety net for the
+        // *current* pair.
+        assert!(
+            orig_sock.exists(),
+            "guard must not remove pre-rebind socket"
+        );
+        assert!(
+            orig_marker.exists(),
+            "guard must not remove pre-rebind marker"
+        );
+        assert!(
+            !new_sock.exists(),
+            "guard must remove the post-rebind socket"
+        );
+        assert!(
+            !new_marker.exists(),
+            "guard must remove the post-rebind marker"
+        );
+    }
+
+    /// Without any rebind swap, `IpcSocketGuard::drop` cleans up the
+    /// originals it was constructed with — the legacy behaviour the
+    /// non-watchdog path still relies on.
+    #[test]
+    fn drop_removes_originals_when_no_swap_happened() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sock = tmp.path().join("only.sock");
+        let marker = tmp.path().join("only.marker");
+        std::fs::write(&sock, b"").unwrap();
+        std::fs::write(&marker, b"").unwrap();
+
+        let guard = IpcSocketGuard::new(&sock, &marker);
+        drop(guard);
+        assert!(!sock.exists());
+        assert!(!marker.exists());
     }
 }

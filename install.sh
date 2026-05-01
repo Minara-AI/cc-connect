@@ -83,6 +83,38 @@ fi
 rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')"
 ok "rustc ${rust_ver}"
 
+# MSRV gate. Some iroh-stack deps use `edition = "2024"`, which requires
+# cargo ≥ 1.85. `cargo build` fails opaquely on older toolchains
+# ("feature `edition2024` is required"); compare the version up front and
+# offer to `rustup update` so users don't burn 5 minutes building before
+# the failure.
+required_rust="1.85.0"
+ver_lt() {
+  # Returns 0 (true) when $1 < $2 by semver-ish ordering. Uses sort -V.
+  local a="$1" b="$2"
+  [[ "$a" == "$b" ]] && return 1
+  [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" == "$a" ]]
+}
+if ver_lt "$rust_ver" "$required_rust"; then
+  warn "rustc $rust_ver is older than the required $required_rust (some deps need edition 2024)."
+  if command -v rustup >/dev/null 2>&1; then
+    if confirm "Run \`rustup update stable\` now?" Y; then
+      rustup update stable
+      # Make sure the just-updated toolchain is the active default.
+      rustup default stable >/dev/null 2>&1 || true
+      rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')"
+      ok "rustc ${rust_ver} (after update)"
+      if ver_lt "$rust_ver" "$required_rust"; then
+        fail "rustc still $rust_ver after update. Manually install a newer toolchain and re-run."
+      fi
+    else
+      fail "Cannot continue with rustc $rust_ver. Run \`rustup update stable\` and re-run install.sh."
+    fi
+  else
+    fail "rustc $rust_ver < $required_rust and rustup is not on PATH. Install Rust via https://rustup.rs and re-run."
+  fi
+fi
+
 if ! command -v git >/dev/null 2>&1; then
   fail "git is required (and missing). Install via your package manager / Xcode CLI tools."
 fi
