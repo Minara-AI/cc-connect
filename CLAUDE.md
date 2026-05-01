@@ -13,9 +13,9 @@ A peer-to-peer chat substrate that lets multiple Claude Code instances share the
 The canonical specs live in repo root, not in this file. Do not duplicate them here.
 
 - @CONTEXT.md — Ubiquitous Language. **Use these terms verbatim** (Room, Ticket, Substrate, Peer, Host, Identity, Pubkey, Message, Hook, Cursor, Backfill, Session, Injection, Context). Never drift to "channel", "session", "client", "history", "memory" except when the term genuinely applies.
-- @PROTOCOL.md — wire spec, RFC 2119 keywords. Anything touching gossip payloads, Tickets, Backfill RPC, file_drop, or on-disk layout must check this first. **Wire-format changes are breaking** — bump `v` and the ALPN.
-- @SECURITY.md — threat model. Read before changing anything in `cc_drop` blocklists, hook injection paths, identity handling, or relay routing.
-- @TODOS.md — known gaps and the v0.1 → v1.0 migration list (start here when picking up unfinished work).
+- [PROTOCOL.md](PROTOCOL.md) — wire spec, RFC 2119 keywords. Read on demand for anything touching gossip payloads, Tickets, Backfill RPC, file_drop, or on-disk layout. **Wire-format changes are breaking** — bump `v` and the ALPN.
+- [SECURITY.md](SECURITY.md) — threat model. Read on demand before changing anything in `cc_drop` blocklists, hook injection paths, identity handling, or relay routing.
+- [TODOS.md](TODOS.md) — known gaps and the v0.1 → v1.0 migration list. Read on demand when picking up unfinished work.
 - `docs/adr/` — decisions already made. Don't re-litigate; if you must reopen, mark the contradiction explicitly.
 
 ## Commands you can't infer from the code
@@ -41,9 +41,9 @@ scripts/smoke-test-bg.sh                   # background host-daemon path
 
 ## Non-obvious gotchas
 
-- **Vendored ed25519 / ed25519-dalek**. `Cargo.toml`'s `[patch.crates-io]` points at `vendored/ed25519` + `vendored/ed25519-dalek`. The published `ed25519-3.0.0-rc.4` is broken against current `pkcs8` (`Error::KeyMalformed` enum-variant break). Drop the patch only when upstream ships a working `ed25519-dalek`. See @TODOS.md.
+- **Vendored ed25519 / ed25519-dalek**. `Cargo.toml`'s `[patch.crates-io]` points at `vendored/ed25519` + `vendored/ed25519-dalek`. The published `ed25519-3.0.0-rc.4` is broken against current `pkcs8` (`Error::KeyMalformed` enum-variant break). Drop the patch only when upstream ships a working `ed25519-dalek`. See [TODOS.md](TODOS.md).
 - **MSRV is 1.89** (`workspace.package.rust-version`). Driven by the iroh stack itself (`iroh@0.97`, `iroh-blobs@0.99`, `iroh-gossip@0.97`, `iroh-relay@0.97` all require 1.89). CI gates on this; install.sh actively `rustup update`s when the user has an older toolchain.
-- **Hook trust boundary**. `cc-connect-hook` injects chat context only when `CC_CONNECT_ROOM` is set in its env (set by `cc-connect-tui` when it spawns the Claude PTY). Unrelated `claude` invocations on the same machine see nothing. Don't loosen this — it's the cross-process isolation guarantee in @SECURITY.md.
+- **Hook trust boundary**. `cc-connect-hook` injects chat context only when `CC_CONNECT_ROOM` is set in its env (set by `cc-connect-tui` when it spawns the Claude PTY). Unrelated `claude` invocations on the same machine see nothing. Don't loosen this — it's the cross-process isolation guarantee in [SECURITY.md](SECURITY.md).
 - **PID-based active-rooms discovery** lives at `/tmp/cc-connect-$UID/active-rooms/<topic>.active`, not under `~`. PIDs are per-machine; cloud-synced homes would collide. See `docs/adr/0003-pid-based-active-rooms-discovery.md`.
 - **8 KB hook stdout budget.** `cc-connect-hook` keeps each `UserPromptSubmit` payload ≤ 8 KB so it stays inline; over that, Claude Code falls back to a 2 KB preview + persisted file. See `docs/adr/0004-hook-budget-and-graceful-overflow.md`.
 - **`cc_drop` path blocklist** rejects `~/.ssh`, `~/.aws`, `.env*`, `id_rsa*`, `*.pem`, etc. Don't widen it without a SECURITY.md update; don't narrow it without an explicit threat-model justification.
@@ -98,7 +98,7 @@ This repo's `.claude/skills/` includes the cc-connect-specific skills (`cc-conne
 
 - **Issue tracker** — GitHub Issues at `Minara-AI/cc-connect` (use the `gh` CLI). See `docs/agents/issue-tracker.md`.
 - **Triage labels** — defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-- **Domain docs** — single context. Glossary at @CONTEXT.md, ADRs under `docs/adr/`, wire spec at @PROTOCOL.md. See `docs/agents/domain-docs.md`.
+- **Domain docs** — single context. Glossary at @CONTEXT.md, ADRs under `docs/adr/`, wire spec at [PROTOCOL.md](PROTOCOL.md). See `docs/agents/domain-docs.md`.
 
 ## What NOT to do
 
