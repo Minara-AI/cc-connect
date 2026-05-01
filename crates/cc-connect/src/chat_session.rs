@@ -39,7 +39,9 @@ use iroh_gossip::{
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use crate::backfill::{try_backfill_from, BackfillHandler, BackfillOutcome, BACKFILL_ALPN};
@@ -176,6 +178,15 @@ pub struct ChatHandle {
 enum InputSource {
     Local,
     Mcp,
+}
+
+/// Branches the send loop multiplexes via `tokio::select!`. Keeps the
+/// arm bodies inside the select short (just a tag); the heavy work
+/// happens in the match below where ownership is unambiguous.
+enum SendEvent {
+    Input(Option<String>, InputSource),
+    Keepalive,
+    Watchdog,
 }
 
 /// Boot a chat session as a tokio task. The task does the iroh + gossip +
@@ -372,6 +383,12 @@ async fn run_session(
     // 8.0. Mention state for the `wait_for_mention` IPC action — shared
     // between the gossip listener (producer) and IPC handlers (consumers).
     let mention_state = MentionState::new();
+    // mesh_health: ms-since-epoch of the most recent gossip event observed
+    // by the listener (any kind: NeighborUp/Down, Received, etc.). Used by
+    // (a) the keepalive sender to decide it's still useful to broadcast
+    // and (b) the watchdog to surface a "mesh quiet" warning when nothing
+    // has been heard for a long time.
+    let mesh_health = Arc::new(AtomicI64::new(now_ms()));
 
     // 8.5. IPC unix-socket server. Lets cc-connect-mcp (and any other
     //      local helper) drive this session — sending chat lines on
@@ -471,6 +488,7 @@ async fn run_session(
     let listener_self_nick = self_nick.clone();
     let listener_mention_state = mention_state.clone();
     let listener_owner_only = cfg.owner_only_mentions;
+    let listener_mesh_health = Arc::clone(&mesh_health);
     let listener_handle = tokio::task::spawn(async move {
         let mut listener_log = match log_io::open_or_create_log(&listener_log_path) {
             Ok(f) => f,
@@ -499,9 +517,18 @@ async fn run_session(
                             "[chat] gossip stream error: {e}"
                         )))
                         .await;
+                    // Back off briefly so a flapping stream doesn't pin
+                    // a CPU-bound retry loop. Receiver is poll-based so
+                    // sleeping is enough — the next .next().await will
+                    // pick up whatever lands once the stream recovers.
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
+            // Any successful gossip event proves the mesh is alive —
+            // refresh the health timestamp before we filter on kind so
+            // NeighborUp/Down also count.
+            listener_mesh_health.store(now_ms(), Ordering::Relaxed);
             crate::gossip_debug::log(&debug_label, &format!("recv {event:?}"));
             let payload: &[u8] = match &event {
                 Event::Received(m) => m.content.as_ref(),
@@ -520,6 +547,13 @@ async fn run_session(
             };
             // Don't echo our own broadcasts back into the log.
             if msg.author == our_pubkey {
+                continue;
+            }
+            // Keepalive: silently update mesh_health (already done above)
+            // and skip log + display + rate limit. The whole point is
+            // an invisible heartbeat, so don't show it to the user or
+            // grow log.jsonl with no-op records.
+            if msg.kind == cc_connect_core::message::KIND_KEEPALIVE {
                 continue;
             }
             match rate_limiter.check_and_record(&msg.author, now_ms()) {
@@ -634,17 +668,64 @@ async fn run_session(
     // Mcp source (it talks via the IPC `send` action like MCP does), and
     // we want both kinds of "us" rate-limited.
     let mut send_rate_limiter = RateLimiter::new();
+    // Keepalive heartbeat: 60 s broadcast keeps NAT mappings warm and
+    // proves to the watchdog the gossip mesh is healthy. Receivers
+    // skip log + display + rate-limit on KIND_KEEPALIVE; only the
+    // mesh_health timestamp moves.
+    let mut keepalive_tick = tokio::time::interval(Duration::from_secs(60));
+    keepalive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    keepalive_tick.tick().await; // consume the immediate first tick
+                                 // Watchdog: if no gossip event has updated mesh_health in
+                                 // STALE_AFTER_MS, surface a single Warn line so the user knows
+                                 // peers are likely unreachable. Re-arms each time it fires.
+    const STALE_AFTER_MS: i64 = 5 * 60_000; // 5 min
+    const RE_WARN_AFTER_MS: i64 = 10 * 60_000; // 10 min between warns
+    let mut watchdog_tick = tokio::time::interval(Duration::from_secs(60));
+    watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    watchdog_tick.tick().await;
+    let mut last_warn_at: i64 = 0;
     let result: Result<()> = loop {
-        let (line, source) = tokio::select! {
+        let select_result = tokio::select! {
             biased;
-            l = input_rx.recv() => match l {
-                Some(s) => (s, InputSource::Local),
-                None => break Ok(()), // caller dropped input_tx → clean shutdown
-            },
-            l = mcp_input_rx.recv() => match l {
-                Some(s) => (s, InputSource::Mcp),
-                None => continue, // MCP server gone; the user channel still drives shutdown
-            },
+            l = input_rx.recv() => SendEvent::Input(l, InputSource::Local),
+            l = mcp_input_rx.recv() => SendEvent::Input(l, InputSource::Mcp),
+            _ = keepalive_tick.tick() => SendEvent::Keepalive,
+            _ = watchdog_tick.tick() => SendEvent::Watchdog,
+        };
+        let (line, source) = match select_result {
+            SendEvent::Input(Some(s), src) => (s, src),
+            SendEvent::Input(None, InputSource::Local) => break Ok(()),
+            SendEvent::Input(None, InputSource::Mcp) => continue,
+            SendEvent::Keepalive => {
+                // Build + broadcast a keepalive Message. Don't append
+                // to log.jsonl, don't echo to display — invisible
+                // heartbeat. Skip on broadcast error: the watchdog
+                // will catch a truly dead mesh.
+                let ka = match Message::new_keepalive(&new_ulid(), pubkey_string.clone(), now_ms())
+                {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if let Ok(bytes) = ka.to_canonical_json() {
+                    let _ = sender.broadcast(Bytes::from(bytes)).await;
+                }
+                continue;
+            }
+            SendEvent::Watchdog => {
+                let now = now_ms();
+                let last = mesh_health.load(Ordering::Relaxed);
+                let elapsed = now - last;
+                if elapsed > STALE_AFTER_MS && (now - last_warn_at) > RE_WARN_AFTER_MS {
+                    let mins = elapsed / 60_000;
+                    let _ = display_tx
+                        .send(DisplayLine::Warn(format!(
+                            "[chat] mesh quiet for {mins}m — peers may be unreachable; restart the room if it stays silent",
+                        )))
+                        .await;
+                    last_warn_at = now;
+                }
+                continue;
+            }
         };
         let body = line.trim_end_matches(['\n', '\r']).to_string();
         if body.is_empty() {

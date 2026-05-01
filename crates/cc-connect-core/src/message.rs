@@ -22,6 +22,13 @@ pub const KIND_CHAT: &str = "chat";
 /// out-of-band over the iroh-blobs ALPN against the author's NodeId.
 pub const KIND_FILE_DROP: &str = "file_drop";
 
+/// v0.2-alpha keepalive: a heartbeat broadcast that keeps the gossip
+/// mesh and relay-mediated NAT mappings warm during long idle periods.
+/// Receivers update their mesh-health watermark and silently skip
+/// logging and display. Body is empty; the envelope is identical to a
+/// chat message otherwise (id, author, ts).
+pub const KIND_KEEPALIVE: &str = "keepalive";
+
 /// Hard ceiling on advertised file size (bytes). 1 GiB is enough for the
 /// "share a screenshot / repo tarball / model weight" use-case while still
 /// blocking obvious griefing payloads. Receivers MUST refuse downloads above
@@ -108,6 +115,25 @@ impl Message {
         Ok(self)
     }
 
+    /// Construct a keepalive Message — a no-op heartbeat used to keep
+    /// the gossip mesh + relay NAT mappings warm during long idle.
+    /// Receivers MUST NOT append to log.jsonl or surface in chat UI;
+    /// they only update their mesh-health watermark.
+    pub fn new_keepalive(id: &str, author: String, ts: i64) -> Result<Self> {
+        let id = normalize_ulid(id)?;
+        Ok(Self {
+            v: PROTOCOL_VERSION,
+            id,
+            author,
+            ts,
+            body: String::new(),
+            kind: KIND_KEEPALIVE.to_string(),
+            nick: None,
+            blob_hash: None,
+            blob_size: None,
+        })
+    }
+
     /// Construct a file_drop Message (v0.2).
     ///
     /// `filename` is the original basename (no path separators); `blob_hash`
@@ -184,6 +210,11 @@ impl Message {
                     .blob_size
                     .ok_or_else(|| anyhow!("BLOB_SIZE_MISSING: file_drop requires blob_size"))?;
                 validate_blob_size(size)?;
+            }
+            KIND_KEEPALIVE => {
+                // Empty body required by convention. We don't strictly
+                // enforce — older / future versions may carry diag info
+                // and we'd rather receive + ignore than reject.
             }
             other => {
                 bail!(

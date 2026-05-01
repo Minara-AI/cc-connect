@@ -393,7 +393,7 @@ Updates **MUST** be atomic: write the new value to a sibling `.cursor.tmp` file,
 
 The following names are reserved and **MUST NOT** be used by v0.1 implementations except as specified:
 
-- **Message kinds:** `chat` (default), `file_drop` (v0.2-alpha — see §4.1), `system` (reserved, v0.3+).
+- **Message kinds:** `chat` (default), `file_drop` (v0.2-alpha — see §4.1), `keepalive` (v0.2-alpha — heartbeat to keep gossip mesh + relay-mediated NAT mappings warm during long idle; receivers MUST NOT append to log.jsonl, MUST NOT surface in chat UI, only update mesh-health watermark), `system` (reserved, v0.3+).
 - **URI scheme:** `cc://` is reserved for MCP resource URIs in v0.2+. v0.1 implementations **MUST NOT** register handlers or expose resources under this scheme. Message bodies **MAY** contain `cc://` strings as data; the reservation applies only to URI handler registration and resource publication.
 - **ALPN strings:** any ALPN beginning with `cc-connect/` is reserved for the cc-connect protocol family. v0.1 uses `cc-connect/v1/backfill`. Future ALPNs (e.g. `cc-connect/v1/file-drop`) follow the same naming.
 - **Filesystem paths:** `~/.cc-connect/`, `${TMPDIR}/cc-connect-${UID}/`, `~/.claude/settings.json`'s `hooks.UserPromptSubmit` array.
