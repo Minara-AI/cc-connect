@@ -76,6 +76,16 @@ pub fn chat_echo() -> Style {
     Style::default().fg(GREEN)
 }
 
+// Own-message palette (chat-ui parity): accent green for both nick and
+// body so the right-aligned bubble reads as "mine" against peers' blue.
+pub fn chat_own_nick() -> Style {
+    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+}
+
+pub fn chat_own_body() -> Style {
+    Style::default().fg(TEXT)
+}
+
 pub fn chat_warn() -> Style {
     Style::default().fg(YELLOW)
 }

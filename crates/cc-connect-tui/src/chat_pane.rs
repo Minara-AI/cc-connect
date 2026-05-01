@@ -43,18 +43,18 @@ pub fn render(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
+    // chat-ui parity: peer messages render `[nick] body` left-aligned;
+    // own messages render `body [nick]` right-aligned so the nick
+    // anchors against the right edge (user-requested layout). System,
+    // marker, warn lines render full-width left-aligned.
     let mut lines: Vec<Line> = Vec::with_capacity(tab.chat_lines.len() * 2);
     for cl in tab.chat_lines.iter() {
-        // Echo = our own send (local user OR our `<self>-cc` AI peer via
-        // MCP). Anything Incoming = remote peer (their human or their AI).
-        // Aligning self-left and peer-right gives the iMessage-style "my
-        // bubble vs theirs" reading the user asked for.
         let is_peer = matches!(
             cl.kind,
             ChatLineKind::Incoming | ChatLineKind::IncomingMention
         );
-        let is_self_msg = matches!(cl.kind, ChatLineKind::Echo);
-        let align = if is_peer {
+        let is_own = matches!(cl.kind, ChatLineKind::Echo);
+        let align = if is_own {
             Alignment::Right
         } else {
             Alignment::Left
@@ -63,15 +63,15 @@ pub fn render(
         let main = match cl.kind {
             ChatLineKind::System => Line::from(Span::styled(cl.text.clone(), theme::chat_system())),
             ChatLineKind::Marker => Line::from(Span::styled(cl.text.clone(), theme::chat_marker())),
-            ChatLineKind::Incoming => render_incoming(&cl.text, false),
-            ChatLineKind::IncomingMention => render_incoming(&cl.text, true),
-            ChatLineKind::Echo => Line::from(Span::styled(cl.text.clone(), theme::chat_echo())),
+            ChatLineKind::Incoming => render_incoming(&cl.text, false, false),
+            ChatLineKind::IncomingMention => render_incoming(&cl.text, true, false),
+            ChatLineKind::Echo => render_incoming(&cl.text, false, true),
             ChatLineKind::Warn => Line::from(Span::styled(cl.text.clone(), theme::chat_warn())),
         };
         lines.push(main.alignment(align));
 
         // Per-message timestamp on the same side as its message body.
-        if (is_peer || is_self_msg) && cl.ts > 0 {
+        if (is_peer || is_own) && cl.ts > 0 {
             let stamp = format!("{} Z", format_utc_hhmm(cl.ts));
             lines.push(Line::from(Span::styled(stamp, theme::chat_timestamp())).alignment(align));
         }
@@ -103,10 +103,26 @@ pub fn render(
         .scroll((scroll_y, 0));
     frame.render_widget(scrollback, chunks[0]);
 
+    // Single-line input. When the buffer is wider than the visible
+    // input area, scroll horizontally so the cursor (= end of buf)
+    // stays in view. Without this the user types past the right edge
+    // and ratatui silently truncates from the head — they keep typing
+    // without seeing what they're writing.
     let prompt = if focused { "› " } else { "  " };
+    let inner_width = chunks[1].width as usize;
+    let prompt_w = prompt.chars().count();
+    let cursor_w = 1; // one-cell space we leave for the live cursor
+    let body_budget = inner_width.saturating_sub(prompt_w + cursor_w);
+    let buf_chars: Vec<char> = tab.input_buf.chars().collect();
+    let visible_buf: String = if buf_chars.len() <= body_budget {
+        tab.input_buf.clone()
+    } else {
+        let start = buf_chars.len() - body_budget;
+        buf_chars[start..].iter().collect()
+    };
     let input = Paragraph::new(Line::from(vec![
         Span::styled(prompt, theme::input_prompt(focused)),
-        Span::styled(tab.input_buf.as_str(), theme::input_text()),
+        Span::styled(visible_buf, theme::input_text()),
     ]));
     frame.render_widget(input, chunks[1]);
 
@@ -182,11 +198,18 @@ fn format_utc_hhmm(ts: i64) -> String {
     format!("{hh:02}:{mm:02}")
 }
 
-/// "[<nick>] <body>" → distinct nick / body styles. When `mention` is true,
-/// the body is rendered in a brighter mention colour.
-fn render_incoming(text: &str, mention: bool) -> Line<'static> {
+/// Render a `[<nick>] <body>` chat line. When `mention` is true the body
+/// uses the brighter mention palette and a leading `(@me)` marker is
+/// pulled out and styled separately. When `own` is true (echo of our
+/// own send) the nick is anchored to the **right** of the body so the
+/// user-requested layout reads `body  [nick]` instead of the
+/// peer-style `[nick] body`. Own messages render in the accent palette
+/// (chat-ui parity), peers in the incoming palette.
+fn render_incoming(text: &str, mention: bool, own: bool) -> Line<'static> {
     let (nick_style, body_style) = if mention {
         (theme::chat_mention_nick(), theme::chat_mention_body())
+    } else if own {
+        (theme::chat_own_nick(), theme::chat_own_body())
     } else {
         (theme::chat_incoming_nick(), theme::chat_incoming_body())
     };
@@ -199,17 +222,26 @@ fn render_incoming(text: &str, mention: bool) -> Line<'static> {
         if let Some(close) = rest.find("] ") {
             let nick = &rest[..close];
             let body = &rest[close + 2..];
-            let mut spans = Vec::with_capacity(5);
+            let mut spans = Vec::with_capacity(6);
             if !mention_marker.is_empty() {
                 spans.push(Span::styled(
                     mention_marker.to_string(),
                     theme::chat_mention_marker(),
                 ));
             }
-            spans.push(Span::styled("[".to_string(), nick_style));
-            spans.push(Span::styled(nick.to_string(), nick_style));
-            spans.push(Span::styled("] ".to_string(), nick_style));
-            spans.push(Span::styled(body.to_string(), body_style));
+            if own {
+                // body  [nick]  — nick anchored on the right edge.
+                spans.push(Span::styled(body.to_string(), body_style));
+                spans.push(Span::styled("  [".to_string(), nick_style));
+                spans.push(Span::styled(nick.to_string(), nick_style));
+                spans.push(Span::styled("]".to_string(), nick_style));
+            } else {
+                // [nick] body — peer-style, nick on the left.
+                spans.push(Span::styled("[".to_string(), nick_style));
+                spans.push(Span::styled(nick.to_string(), nick_style));
+                spans.push(Span::styled("] ".to_string(), nick_style));
+                spans.push(Span::styled(body.to_string(), body_style));
+            }
             return Line::from(spans);
         }
     }
