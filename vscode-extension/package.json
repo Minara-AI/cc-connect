@@ -35,16 +35,22 @@
     ]
   },
   "scripts": {
-    "compile": "tsc -p .",
+    "compile": "bun run compile:host && bun run compile:webview",
+    "compile:host": "tsc -p .",
+    "compile:webview": "bun build ./webview/main.tsx --outdir ./dist/webview --format esm --target browser --jsx-factory React.createElement --jsx-fragment React.Fragment --sourcemap=external",
     "watch": "tsc -p . --watch",
-    "vscode:prepublish": "tsc -p .",
+    "vscode:prepublish": "bun run compile",
     "probe:sdk": "bun run scripts/probe-sdk.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.74.0",
     "typescript": "^5.4.0"
   }
