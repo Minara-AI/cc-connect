@@ -10,6 +10,8 @@
 
 # Editor / IDE
 .vscode/
+!vscode-extension/.vscode/
+!vscode-extension/.vscode/*
 .idea/
 *.swp
 *.swo
