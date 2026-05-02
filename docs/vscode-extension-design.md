@@ -41,18 +41,24 @@ Per-Room runtime, lives in the VSCode **extension host** process:
 2. Extension host connects to `chat.sock` for chat send/receive, and
    tails `log.jsonl` (Messages) + `events.jsonl` (rate-limit warnings,
    system notices) for rendering.
-3. `claude --print --input-format stream-json --output-format stream-json
-   --include-hook-events --verbose --session-id <stable-UUID>
-   --mcp-config <inline>` — spawned **per turn** (per @-mention), not
-   long-running. Each turn is a fresh `--print` invocation; the
-   extension threads continuity through `--session-id`, which is
-   honored end-to-end (verified §9 Test 2). No API key; uses the
-   user's Claude subscription via OAuth, same as the CLI. Each child's
-   env **MUST** include `CC_CONNECT_ROOM=<topic-hex>` so the existing
-   `UserPromptSubmit` hook gates injection correctly (see §3).
-   `--include-hook-events` is required so the Claude panel can render
-   hook activity (hook_started / hook_response with stdout / stderr /
-   exit_code) without extra plumbing.
+3. `query()` from `@anthropic-ai/claude-agent-sdk` (formerly the Claude
+   Code SDK) — spawns the user's installed `claude` binary under the
+   hood, exposes a typed `AsyncGenerator<SDKMessage>`, and threads
+   continuity through a stable `sessionId` option. The extension does
+   **not** hand-roll subprocess spawn / stream-json parsing /
+   `--mcp-config` JSON wrangling — the SDK does all of that. License
+   note: SDK is under Anthropic Commercial Terms (not OSS); used as a
+   runtime npm dependency, same pattern as `@anthropic-ai/sdk` in OSS
+   projects. No redistribution of SDK source.
+
+   Per turn (per @-mention) the extension calls `query()` with a
+   prompt and an `AbortController`. The SDK supports streaming input
+   (`AsyncIterable<SDKUserMessage>`) so multi-prompt-per-call is also
+   possible if we need it later. Each invocation's env **MUST** include
+   `CC_CONNECT_ROOM=<topic-hex>` so the existing `UserPromptSubmit`
+   hook gates injection correctly (see §3). The `includeHookLifecycleEvents`
+   option emits hook_started / hook_response into the same typed event
+   stream so the Claude panel can render hook activity natively.
 4. cc-connect MCP server registered into the spawned `claude` via
    `--mcp-config` so `cc_send` / `cc_drop` / `cc_wait_for_mention` work
    inside the embedded Claude. The MCP entry shape is the same one
@@ -150,17 +156,21 @@ Keeps a single mental model across CLI + TUI + VSCode: "closing the
 local view ≠ tearing down the Room."
 
 **How.**
-- On user-initiated tab close: SIGTERM the embedded Claude. If the
+- On user-initiated tab close: call `abortController.abort()` on the
+  in-flight `query()` (and `q.interrupt()` if mid-streaming-input);
+  the SDK cleanly tears down its child `claude` process. If the
   Peer owns the `host-bg` daemon, show a modal — `Stop daemon` /
   `Keep running` (default). Reuse `cc-connect host-bg list` and
   `cc-connect host-bg stop <prefix>`.
-- On extension *deactivation* (window close, reload, crash): SIGTERM
-  the embedded Claude; the modal cannot fire reliably here, so fall
-  back to the user's stored preference (default: keep host-bg
-  running, matching `cc-connect clear` semantics). Preference key
-  lives in `~/.cc-connect/extension/config.json` per §6, not in
-  VSCode `globalState`.
-- **Mid-tool-use SIGTERM.** Partial writes are accepted as v0
+- On extension *deactivation* (window close, reload, crash):
+  `abortController.abort()` again; the modal cannot fire reliably
+  here, so fall back to the user's stored preference (default: keep
+  host-bg running, matching `cc-connect clear` semantics).
+  Preference key lives in `~/.cc-connect/extension/config.json` per
+  §6, not in VSCode `globalState`.
+- **Mid-tool-use abort.** SDK's abort path lets the in-flight tool
+  call return cleanly when possible; for non-cooperating tools
+  (e.g. an Edit mid-write) partial writes are accepted as v0
   behaviour — same cost as Ctrl-C in TUI today. Document, don't fix
   in v0.
 
@@ -227,24 +237,30 @@ extension host inherits launchctl's environment, **not** the user's
 shell environment. `claude`, `cc-connect`, `cc-connect-mcp`,
 `cc-connect-host-bg` are not on `PATH`.
 
-- The extension MUST resolve binaries by absolute path:
+- For `claude`: pass
+  `pathToClaudeCodeExecutable: '<homedir>/.local/bin/claude'` to
+  `query()`. SDK handles the rest.
+- For the cc-connect binaries (`cc-connect`, `cc-connect-host-bg`,
+  `cc-connect-mcp`): the extension resolves by absolute path
   `~/.local/bin/<name>` (where `install.sh` symlinks them per
   `INSTALLED_BIN_NAMES`).
-- If the symlink is missing, `cc-connect doctor`-style guidance is
-  surfaced in the sidebar instead of letting `spawn` fail with
+- If any symlink is missing, surface `cc-connect doctor`-style
+  guidance in the sidebar instead of letting `spawn` fail with
   `ENOENT`.
 - Document this in the extension README and the troubleshooting
   table in @README.md once shipped.
 
 ### 4.5 MCP config for the embedded Claude
 
-- The extension constructs an in-memory MCP config equivalent to the
-  one `setup.rs` writes to `~/.claude.json::mcpServers["cc-connect"]`.
-  Key shared with `lifecycle.rs::MCP_SERVER_KEY`.
-- Keep the construction in **one place** in the extension code,
-  named `MCP_SERVER_KEY = "cc-connect"`, so future protocol-level
-  renames stay symmetric across `setup.rs` / `lifecycle.rs` / extension.
-  Add a CI grep-check (or doc-only TODO) to catch drift.
+- The extension passes `mcpServers` directly to the SDK's `query()`
+  options — no `--mcp-config` JSON file or string wrangling. The
+  shape mirrors the entry `setup.rs` writes to
+  `~/.claude.json::mcpServers["cc-connect"]`; `MCP_SERVER_KEY`
+  ("cc-connect") stays a single shared constant.
+- Construction lives in one place in the extension code, named
+  `MCP_SERVER_KEY = "cc-connect"`, so future protocol-level renames
+  stay symmetric across `setup.rs` / `lifecycle.rs` / extension. Add
+  a CI grep-check (or doc-only TODO) to catch drift.
 
 ### 4.6 Orientation preamble
 
@@ -267,7 +283,7 @@ surface exists and is bounded:
 | webview → host | `room:cancel-turn` | `{}` (deferred — see §8) |
 | host → webview | `chat:message` | the Message verbatim from `log.jsonl` |
 | host → webview | `chat:event` | rate-limit / system notice from `events.jsonl` |
-| host → webview | `claude:event` | a stream-json event from the embedded Claude |
+| host → webview | `claude:event` | one `SDKMessage` from the SDK's `AsyncGenerator` (already typed; no parsing) |
 | host → webview | `room:state` | peer count, busy banner, queued mentions |
 
 The webview never receives raw bytes from `chat.sock` or the embedded
@@ -280,8 +296,13 @@ webview's CSP can stay strict.
   theme.ts}` are renderer-agnostic (verified — no Ink imports). Lift
   directly into the extension. The Ink `components/` need a DOM
   rewrite; business logic transfers as-is.
-- `cc-connect-mcp` — registered into the embedded Claude via
-  `--mcp-config`. No fork.
+- `@anthropic-ai/claude-agent-sdk` (npm) — runtime dep that wraps
+  spawn / stream-json / hook events / abort / MCP injection /
+  permission requests. Replaces what would otherwise be ~hundreds of
+  lines of subprocess + parser glue. Anthropic Commercial Terms;
+  used as a normal npm dep alongside our MIT/Apache extension code.
+- `cc-connect-mcp` — registered into the embedded Claude via the
+  SDK's `mcpServers` option. No fork.
 - `cc-connect-hook` — unchanged. Continues to be the canonical
   Injection path for both TUI and extension.
 - Open: whether `chat-ui/` and the extension share a TS package vs.
@@ -331,9 +352,9 @@ explicitly in the extension `package.json` `engines.vscode`.
   feel.
 - **Multi-Room layout.** One webview per Room (multiple editor tabs)
   vs single webview with internal tab strip. Likely the former.
-- **In-band turn cancellation** beyond "close the tab". Want a
-  Cmd-Period analog that interrupts the embedded Claude without
-  killing the Session.
+- ~~In-band turn cancellation~~ — resolved by SDK's `q.interrupt()`
+  + `abortController.abort()`; expose as a Cmd-Period analog in the
+  Claude panel during v0 if cheap, else after.
 - **Existing TUI Room collision.** If the user has
   `cc-connect room start` running in a TUI and opens VSCode, does
   the extension attach to the existing `host-bg` (by topic), refuse,
@@ -346,9 +367,11 @@ explicitly in the extension `package.json` `engines.vscode`.
 
 ## 9. Validation results
 
-Tests 1, 2, 4 ran 2026-05-02 against `claude` v2.1.126 on macOS 24.6.
-Tests 3, 5 deferred (rationale below). Captures live under
-`/tmp/cc-smoke/` for the duration of the scaffold work.
+Tests 1, 2, 4, 6 ran 2026-05-02 against `claude` v2.1.126 +
+`@anthropic-ai/claude-agent-sdk` v0.2.126 on macOS 24.6. Tests 3, 5
+deferred (rationale below). Captures live under `/tmp/cc-smoke/`
+and `vscode-extension/scripts/probe-sdk.ts` for the duration of the
+scaffold work.
 
 1. ✅ **Hook fires under `--print --input-format stream-json
    --output-format stream-json --include-hook-events --verbose`.** Both
@@ -384,6 +407,20 @@ Tests 3, 5 deferred (rationale below). Captures live under
    GUI-launched VSCode. Mitigation in §4.4 (resolve every binary by
    absolute path under `~/.local/bin/`) stands and is implementable
    without this validation.
+
+6. ✅ **Claude Agent SDK works end-to-end with OAuth + a
+   user-supplied claude binary.** `query()` from
+   `@anthropic-ai/claude-agent-sdk@0.2.126`, called from a Bun
+   subprocess (proxy for VSCode extension host), spawned the user's
+   `~/.local/bin/claude`, produced a `system:init` event with a
+   valid `session_id`, and reported `apiKeySource: "none"` —
+   confirming OAuth subscription path with no API key. Probe used
+   `pathToClaudeCodeExecutable` because the SDK's optional bundled
+   native binary (`@anthropic-ai/claude-agent-sdk-darwin-arm64`)
+   failed to extract on install — irrelevant since we explicitly
+   reuse the user's installed `claude` per §4.4. AbortController
+   cleanly shut the SDK down before any model call landed (zero
+   quota burn). Capture: `vscode-extension/scripts/probe-sdk.ts`.
 
 **Bonus findings adopted into the design**:
 
