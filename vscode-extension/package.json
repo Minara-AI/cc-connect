@@ -29,7 +29,11 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -p . --watch",
-    "vscode:prepublish": "tsc -p ."
+    "vscode:prepublish": "tsc -p .",
+    "probe:sdk": "bun run scripts/probe-sdk.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
