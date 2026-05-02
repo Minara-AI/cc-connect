@@ -4,4 +4,6 @@ out/
 .vscode-test/
 bun.lock
 .omc/
+scripts/*.js
+scripts/*.js.map
 
