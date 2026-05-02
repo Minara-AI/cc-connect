@@ -1,0 +1,39 @@
+{
+  "name": "cc-connect-vscode",
+  "displayName": "cc-connect",
+  "description": "Peer-to-peer chat substrate for shared Claude Code context",
+  "version": "0.1.0",
+  "publisher": "minara",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Minara-AI/cc-connect.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onCommand:cc-connect.hello"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cc-connect.hello",
+        "title": "Hello",
+        "category": "cc-connect"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . --watch",
+    "vscode:prepublish": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.4.0"
+  }
+}
