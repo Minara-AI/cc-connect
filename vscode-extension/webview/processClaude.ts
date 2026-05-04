@@ -20,7 +20,13 @@ export type ClaudeBlock =
       input: Record<string, unknown>;
       result?: { preview: string; truncated: boolean; isError: boolean };
     }
-  | { kind: 'result'; numTurns: number; costUsd?: number }
+  | {
+      kind: 'result';
+      numTurns: number;
+      costUsd?: number;
+      isError?: boolean;
+      errorText?: string;
+    }
   | { kind: 'error'; message: string };
 
 interface RawEvent {
@@ -33,6 +39,9 @@ interface RawEvent {
   outcome?: string;
   num_turns?: number;
   total_cost_usd?: number;
+  is_error?: boolean;
+  result?: string;
+  api_error_status?: string | null;
   error?: string;
   message?: {
     content?: ContentBlock[] | string;
@@ -145,10 +154,16 @@ export function processClaude(events: unknown[]): ClaudeBlock[] {
     }
 
     if (t === 'result') {
+      const isError = !!ev.is_error || (sub !== undefined && sub !== 'success');
+      const errorText = isError
+        ? (ev.result?.trim() || ev.api_error_status || sub || 'unknown error')
+        : undefined;
       blocks.push({
         kind: 'result',
         numTurns: ev.num_turns ?? 0,
         costUsd: ev.total_cost_usd,
+        isError,
+        errorText,
       });
       continue;
     }

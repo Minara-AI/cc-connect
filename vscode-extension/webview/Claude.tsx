@@ -71,6 +71,15 @@ function BlockRow({ block }: { block: ClaudeBlock }): React.ReactElement | null 
         typeof block.costUsd === 'number'
           ? ` · $${block.costUsd.toFixed(3)}`
           : '';
+      if (block.isError) {
+        return (
+          <div className="claude-row claude-result claude-error">
+            ✗ {block.errorText ?? 'failed'} ({block.numTurns} turn
+            {block.numTurns === 1 ? '' : 's'}
+            {cost})
+          </div>
+        );
+      }
       return (
         <div className="claude-row claude-result">
           ✓ done ({block.numTurns} turn{block.numTurns === 1 ? '' : 's'}
