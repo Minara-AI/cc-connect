@@ -38,6 +38,8 @@ function App(): React.ReactElement {
           if (prev.some((x) => x.id === m.id)) return prev;
           return [...prev, m].sort((a, b) => a.id.localeCompare(b.id));
         });
+      } else if (msg.type === 'chat:send-error') {
+        setStatus(`send failed: ${String(msg.body)}`);
       }
     };
     window.addEventListener('message', onMsg);
@@ -51,6 +53,10 @@ function App(): React.ReactElement {
     });
   };
 
+  const onSend = (body: string): void => {
+    vscode.postMessage({ type: 'chat:send', body });
+  };
+
   return (
     <React.Fragment>
       <h1>cc-connect — Room</h1>
@@ -58,7 +64,7 @@ function App(): React.ReactElement {
         topic: {topic ? `${topic.slice(0, 16)}…` : '(unknown)'} · me: {myNick}
       </p>
       <div className="panes">
-        <Chat messages={messages} myNick={myNick} />
+        <Chat messages={messages} myNick={myNick} onSend={onSend} />
         <div className="pane">
           <h2>claude</h2>
           <div className="muted">(no Claude session — Step 4 will wire SDK)</div>

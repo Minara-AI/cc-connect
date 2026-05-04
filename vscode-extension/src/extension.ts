@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { ccSend } from './host/ipc';
 import { tailLog, type LogTailHandle } from './host/log_tail';
 import type { Message } from './types';
 
@@ -44,12 +45,22 @@ async function openRoomPanel(
   panel.webview.html = getRoomHtml(panel.webview, distRoot);
 
   panel.webview.onDidReceiveMessage(
-    (msg: { type?: string; body?: unknown }) => {
+    async (msg: { type?: string; body?: unknown }) => {
       if (msg.type === 'echo:request') {
         vscode.window.showInformationMessage(
           `cc-connect: webview said "${String(msg.body)}"`,
         );
         panel.webview.postMessage({ type: 'echo:reply', body: 'pong' });
+      } else if (msg.type === 'chat:send') {
+        const body = typeof msg.body === 'string' ? msg.body.trim() : '';
+        if (!body) return;
+        const resp = await ccSend(topic, body);
+        if (!resp.ok) {
+          panel.webview.postMessage({
+            type: 'chat:send-error',
+            body: resp.err ?? 'unknown ipc error',
+          });
+        }
       }
     },
     undefined,
@@ -165,6 +176,9 @@ function getRoomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .chat-line .nick { font-weight: 600; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .chat-line.me .nick { color: var(--vscode-textLink-foreground); }
     .chat-line .body { opacity: 0.95; word-wrap: break-word; }
+    .chat-input { margin-top: 8px; }
+    .chat-input textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 36px; max-height: 200px; padding: 6px 8px; font: inherit; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.4; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; outline: none; }
+    .chat-input textarea:focus { border-color: var(--vscode-focusBorder); }
     button { font: inherit; padding: 4px 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 3px; cursor: pointer; }
     button:hover { background: var(--vscode-button-hoverBackground); }
     .actions { margin-top: 16px; }
