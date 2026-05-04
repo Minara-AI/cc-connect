@@ -39,7 +39,12 @@ function run(args: string[]): Promise<RunResult> {
 
 /** Spawn `cc-connect host-bg start` and return the printed Ticket.
  *  The daemon stays running detached; this call exits as soon as the
- *  Ticket is on stdout. */
+ *  Ticket is on stdout.
+ *
+ *  Real stdout format observed in v0.1:
+ *    `Daemon hosting room <topic-prefix> (pid <pid>): cc1-<ticket>`
+ *  We extract the `cc1-…` token defensively (matches any future
+ *  re-wording of the surrounding text). */
 export async function startHostBg(): Promise<string> {
   const r = await run(['host-bg', 'start']);
   if (r.code !== 0) {
@@ -47,13 +52,13 @@ export async function startHostBg(): Promise<string> {
       `host-bg start exited ${r.code}: ${(r.stderr || r.stdout).trim()}`,
     );
   }
-  const ticket = r.stdout.trim();
-  if (!ticket.startsWith('cc1-')) {
+  const match = r.stdout.match(/cc1-\S+/);
+  if (!match) {
     throw new Error(
-      `unexpected host-bg stdout: ${ticket.slice(0, 80)}`,
+      `host-bg start: no cc1- ticket found in stdout: ${r.stdout.trim().slice(0, 200)}`,
     );
   }
-  return ticket;
+  return match[0];
 }
 
 /** Spawn `cc-connect chat-daemon start <ticket>` and return the bound
