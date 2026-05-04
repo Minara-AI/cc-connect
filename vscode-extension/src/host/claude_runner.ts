@@ -64,13 +64,15 @@ export function createClaudeRunner(
         includeHookEvents: true,
         abortController: ac,
         env: { ...process.env, CC_CONNECT_ROOM: opts.topic },
-        // v0 trust posture: auto-allow every tool. The headless SDK
-        // path has nowhere to surface a permission prompt — without
-        // this, mcp__cc-connect__cc_at (Claude's only path back into
-        // the Room) gets denied and Claude gives up on the round-
-        // trip. Real per-tool approval UI in the Claude panel is
-        // tracked as a §8 deferred item in the design doc.
-        canUseTool: async () => ({ behavior: 'allow' as const }),
+        // v0 trust posture: bypass all permission dialogs. The headless
+        // SDK path has nowhere to render an approval prompt — even with
+        // a `canUseTool` callback some flows still try to surface a
+        // dialog and crash the turn with a ZodError. `bypassPermissions`
+        // skips the permission layer entirely so cc_at (Claude's path
+        // back into the Room) and dev tools (Read/Edit/Bash) just work.
+        // Real per-tool approval UI in the Claude panel is deferred —
+        // see design doc §8 ("Permission approvals UI").
+        permissionMode: 'bypassPermissions',
       },
     });
     hasStarted = true;
