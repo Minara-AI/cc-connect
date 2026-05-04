@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Chat } from './Chat';
+import { Claude, type ClaudeRunnerState } from './Claude';
 import type { Message } from './types';
 
 declare global {
@@ -20,6 +21,11 @@ function App(): React.ReactElement {
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [myNick, setMyNick] = React.useState('(me)');
   const [topic, setTopic] = React.useState('');
+  const [claudeEvents, setClaudeEvents] = React.useState<unknown[]>([]);
+  const [claudeState, setClaudeState] = React.useState<ClaudeRunnerState>({
+    busy: false,
+    queued: 0,
+  });
 
   React.useEffect(() => {
     const onMsg = (event: MessageEvent): void => {
@@ -40,6 +46,11 @@ function App(): React.ReactElement {
         });
       } else if (msg.type === 'chat:send-error') {
         setStatus(`send failed: ${String(msg.body)}`);
+      } else if (msg.type === 'claude:event') {
+        setClaudeEvents((prev) => [...prev, msg.body]);
+      } else if (msg.type === 'claude:state') {
+        const s = msg.body as ClaudeRunnerState;
+        setClaudeState({ busy: !!s.busy, queued: s.queued ?? 0 });
       }
     };
     window.addEventListener('message', onMsg);
@@ -65,10 +76,7 @@ function App(): React.ReactElement {
       </p>
       <div className="panes">
         <Chat messages={messages} myNick={myNick} onSend={onSend} />
-        <div className="pane">
-          <h2>claude</h2>
-          <div className="muted">(no Claude session — Step 4 will wire SDK)</div>
-        </div>
+        <Claude events={claudeEvents} state={claudeState} />
       </div>
       <p className="actions">
         <button onClick={onEcho}>Echo to host</button>

@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     prompt: 'reply with the single word OK and nothing else',
     options: {
       abortController: ac,
-      includeHookLifecycleEvents: true,
+      includeHookEvents: true,
       pathToClaudeCodeExecutable: claudeBin,
       // Skip user-global hooks/MCP for an isolated probe — same trick we
       // used in the §9 Test 2 capture. Lets us run without polluting

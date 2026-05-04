@@ -2,9 +2,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { createClaudeRunner } from './host/claude_runner';
 import { startChatDaemon, startHostBg } from './host/daemon';
 import { ccSend } from './host/ipc';
 import { tailLog, type LogTailHandle } from './host/log_tail';
+import { shouldWakeClaude } from './host/mention';
 import type { Message } from './types';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -143,10 +145,25 @@ function openRoomPanelForTopic(
     body: { topic, myNick },
   });
 
+  const runner = createClaudeRunner({
+    topic,
+    onEvent: (event) =>
+      panel.webview.postMessage({ type: 'claude:event', body: event }),
+    onStateChange: (state) =>
+      panel.webview.postMessage({ type: 'claude:state', body: state }),
+  });
+
   let tail: LogTailHandle | undefined;
   try {
     tail = tailLog(topic, (m: Message) => {
       panel.webview.postMessage({ type: 'chat:message', body: m });
+      // Wake Claude on @-mention from a peer (not from ourselves or our
+      // own AI mirror form, otherwise we'd loop on Claude's own outputs).
+      const fromMe =
+        m.nick === myNick || (myNick && m.nick === `${myNick}-cc`);
+      if (!fromMe && myNick && shouldWakeClaude(m.body, myNick)) {
+        runner.enqueue(m.body);
+      }
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -156,6 +173,7 @@ function openRoomPanelForTopic(
   panel.onDidDispose(
     () => {
       tail?.close();
+      runner.abort();
     },
     undefined,
     context.subscriptions,
@@ -247,6 +265,16 @@ function getRoomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .chat-input { margin-top: 8px; }
     .chat-input textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 36px; max-height: 200px; padding: 6px 8px; font: inherit; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.4; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; outline: none; }
     .chat-input textarea:focus { border-color: var(--vscode-focusBorder); }
+    .claude-log { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.55; max-height: 60vh; overflow-y: auto; }
+    .claude-row { padding: 2px 0; word-wrap: break-word; }
+    .claude-system { opacity: 0.5; }
+    .claude-hook { opacity: 0.4; padding-left: 12px; }
+    .claude-text { white-space: pre-wrap; opacity: 0.95; }
+    .claude-tool { color: var(--vscode-textLink-foreground); }
+    .claude-result { opacity: 0.6; padding-top: 4px; border-top: 1px dashed var(--vscode-panel-border); margin-top: 4px; }
+    .claude-error { color: var(--vscode-errorForeground); }
+    .claude-other { opacity: 0.35; }
+    .pane-busy { opacity: 0.7; font-weight: 400; font-size: 11px; }
     button { font: inherit; padding: 4px 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 3px; cursor: pointer; }
     button:hover { background: var(--vscode-button-hoverBackground); }
     .actions { margin-top: 16px; }
