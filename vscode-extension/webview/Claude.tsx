@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useStickyScroll } from './useStickyScroll';
 
 export interface ClaudeRunnerState {
   busy: boolean;
@@ -11,6 +12,7 @@ interface ClaudeProps {
 }
 
 export function Claude({ events, state }: ClaudeProps): React.ReactElement {
+  const scrollRef = useStickyScroll(events.length);
   const busyLabel = state.busy
     ? state.queued > 0
       ? `· busy (${state.queued} queued)`
@@ -21,7 +23,7 @@ export function Claude({ events, state }: ClaudeProps): React.ReactElement {
       <h2>
         claude {busyLabel && <span className="pane-busy">{busyLabel}</span>}
       </h2>
-      <div className="claude-log">
+      <div className="claude-log" ref={scrollRef}>
         {events.length === 0 ? (
           <div className="muted">(idle — @-mention me from chat to start)</div>
         ) : (

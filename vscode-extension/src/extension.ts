@@ -265,6 +265,9 @@ function getRoomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .chat-line .nick { font-weight: 600; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .chat-line.me .nick { color: var(--vscode-textLink-foreground); }
     .chat-line .body { opacity: 0.95; word-wrap: break-word; }
+    .mention { font-weight: 500; color: var(--vscode-textLink-foreground); }
+    .mention.me { background: var(--vscode-editor-selectionHighlightBackground, rgba(255,200,0,0.18)); padding: 0 3px; border-radius: 2px; }
+    .mention.broadcast { color: var(--vscode-symbolIcon-eventForeground, var(--vscode-textLink-foreground)); font-style: italic; }
     .chat-input { margin-top: 8px; }
     .chat-input textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 36px; max-height: 200px; padding: 6px 8px; font: inherit; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.4; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; outline: none; }
     .chat-input textarea:focus { border-color: var(--vscode-focusBorder); }

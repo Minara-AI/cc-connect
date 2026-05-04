@@ -1,5 +1,7 @@
 import * as React from 'react';
+import { highlightMentions } from './highlightMentions';
 import type { Message } from './types';
+import { useStickyScroll } from './useStickyScroll';
 
 interface ChatProps {
   messages: Message[];
@@ -9,6 +11,7 @@ interface ChatProps {
 
 export function Chat({ messages, myNick, onSend }: ChatProps): React.ReactElement {
   const [draft, setDraft] = React.useState('');
+  const scrollRef = useStickyScroll(messages.length);
 
   const submit = (): void => {
     const trimmed = draft.trim();
@@ -27,7 +30,7 @@ export function Chat({ messages, myNick, onSend }: ChatProps): React.ReactElemen
   return (
     <div className="pane">
       <h2>chat</h2>
-      <div className="chat-log">
+      <div className="chat-log" ref={scrollRef}>
         {messages.length === 0 ? (
           <div className="muted">(no messages yet — waiting for log.jsonl tail…)</div>
         ) : (
@@ -64,7 +67,7 @@ function ChatLine({
     <div className={`chat-line ${isMe ? 'me' : 'peer'}`}>
       <span className="ts">{time}</span>
       <span className="nick">{message.nick ?? '(anon)'}</span>
-      <span className="body">{message.body}</span>
+      <span className="body">{highlightMentions(message.body, myNick)}</span>
     </div>
   );
 }
