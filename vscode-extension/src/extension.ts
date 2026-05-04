@@ -157,11 +157,14 @@ function openRoomPanelForTopic(
   try {
     tail = tailLog(topic, (m: Message) => {
       panel.webview.postMessage({ type: 'chat:message', body: m });
-      // Wake Claude on @-mention from a peer (not from ourselves or our
-      // own AI mirror form, otherwise we'd loop on Claude's own outputs).
-      const fromMe =
-        m.nick === myNick || (myNick && m.nick === `${myNick}-cc`);
-      if (!fromMe && myNick && shouldWakeClaude(m.body, myNick)) {
+      // Wake Claude on @-mentions. Skip ONLY messages authored by our
+      // own AI mirror (`<myNick>-cc`) — otherwise Claude's own outputs
+      // would re-trigger on themselves and loop. The user's own
+      // messages still fire so self-instruction (typing
+      // `@<myNick>-cc do X` or `@me ...` in your own chat) works
+      // per design D1.
+      const fromOwnAi = !!myNick && m.nick === `${myNick}-cc`;
+      if (!fromOwnAi && myNick && shouldWakeClaude(m.body, myNick)) {
         runner.enqueue(m.body);
       }
     });
