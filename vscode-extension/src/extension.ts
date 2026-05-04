@@ -286,6 +286,30 @@ function getRoomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .claude-tool-name { font-weight: 600; color: var(--vscode-textLink-foreground); }
     .claude-tool-input { opacity: 0.85; word-break: break-all; }
     .claude-tool-result { margin-top: 4px; padding-left: 12px; opacity: 0.75; white-space: pre-wrap; word-wrap: break-word; }
+    .md { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.5; }
+    .md > *:first-child { margin-top: 0; }
+    .md > *:last-child { margin-bottom: 0; }
+    .md p { margin: 4px 0; }
+    .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 12px 0 4px; line-height: 1.3; font-weight: 600; }
+    .md h1 { font-size: 1.3em; }
+    .md h2 { font-size: 1.18em; }
+    .md h3 { font-size: 1.08em; }
+    .md h4, .md h5, .md h6 { font-size: 1em; }
+    .md ul, .md ol { margin: 4px 0; padding-left: 24px; }
+    .md li { margin: 2px 0; }
+    .md li > p { margin: 0; }
+    .md blockquote { margin: 4px 0; padding: 0 12px; border-left: 3px solid var(--vscode-textBlockQuote-border, var(--vscode-panel-border)); opacity: 0.85; }
+    .md a { color: var(--vscode-textLink-foreground); text-decoration: none; }
+    .md a:hover { text-decoration: underline; }
+    .md code { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.92em; padding: 1px 5px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.12)); border-radius: 3px; }
+    .md-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.92em; padding: 8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.12)); border-radius: 4px; overflow-x: auto; margin: 6px 0; }
+    .md-pre code { padding: 0; background: transparent; border-radius: 0; font-size: 1em; }
+    .md table { border-collapse: collapse; margin: 6px 0; }
+    .md th, .md td { border: 1px solid var(--vscode-panel-border); padding: 4px 8px; text-align: left; }
+    .md th { background: rgba(127,127,127,0.08); font-weight: 600; }
+    .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
+    .md strong { font-weight: 600; }
+    .md em { font-style: italic; }
     .pane-busy { opacity: 0.7; font-weight: 400; font-size: 11px; }
     button { font: inherit; padding: 4px 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 3px; cursor: pointer; }
     button:hover { background: var(--vscode-button-hoverBackground); }

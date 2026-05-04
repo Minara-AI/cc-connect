@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { MarkdownContent } from './MarkdownContent';
 import { processClaude, type ClaudeBlock } from './processClaude';
 import { useStickyScroll } from './useStickyScroll';
 
@@ -70,7 +71,11 @@ function BlockRow({ block }: { block: ClaudeBlock }): React.ReactElement | null 
       );
     }
     case 'text':
-      return <div className="claude-row claude-text">{block.text}</div>;
+      return (
+        <div className="claude-row claude-text">
+          <MarkdownContent text={block.text} />
+        </div>
+      );
     case 'tool':
       return <ToolCard block={block} />;
     case 'result': {
