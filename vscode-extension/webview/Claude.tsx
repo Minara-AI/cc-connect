@@ -1,6 +1,11 @@
 import * as React from 'react';
 import { MarkdownContent } from './MarkdownContent';
 import { processClaude, type ClaudeBlock } from './processClaude';
+import {
+  BashResultView,
+  EditDiffView,
+  ExpandableText,
+} from './ToolCardBody';
 import { useStickyScroll } from './useStickyScroll';
 
 export interface ClaudeRunnerState {
@@ -112,20 +117,46 @@ function ToolCard({
   const cls = block.result?.isError
     ? 'claude-tool-card claude-tool-error'
     : 'claude-tool-card';
+  const short = shortenToolName(block.name);
+  const isEdit = short === 'Edit' || short === 'Write' || short === 'MultiEdit';
+  const isBash = short === 'Bash';
   return (
     <div className={cls}>
       <div className="claude-tool-head">
-        <span className="claude-tool-name">{shortenToolName(block.name)}</span>
-        <span className="claude-tool-input">{summarizeInput(block.name, block.input)}</span>
+        <span className="claude-tool-name">{short}</span>
+        <span className="claude-tool-input">
+          {summarizeInput(block.name, block.input)}
+        </span>
+        {!block.result && <span className="claude-tool-pending">⏳</span>}
       </div>
+      {isEdit && <EditDiffView input={block.input} />}
       {block.result && (
-        <div className="claude-tool-result">
-          {block.result.isError ? '✗ ' : '↳ '}
-          {block.result.preview || '(empty)'}
-        </div>
+        <ToolResultView
+          isBash={isBash}
+          fullText={block.result.fullText}
+          isError={block.result.isError}
+        />
       )}
     </div>
   );
+}
+
+function ToolResultView({
+  isBash,
+  fullText,
+  isError,
+}: {
+  isBash: boolean;
+  fullText: string;
+  isError: boolean;
+}): React.ReactElement {
+  if (!fullText) {
+    return <div className="claude-tool-empty">(empty)</div>;
+  }
+  if (isBash) {
+    return <BashResultView text={fullText} isError={isError} />;
+  }
+  return <ExpandableText text={fullText} isError={isError} />;
 }
 
 /** Strip the `mcp__<server>__` prefix off MCP tool names so they

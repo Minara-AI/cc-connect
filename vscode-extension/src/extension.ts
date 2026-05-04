@@ -286,6 +286,17 @@ function getRoomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .claude-tool-name { font-weight: 600; color: var(--vscode-textLink-foreground); }
     .claude-tool-input { opacity: 0.85; word-break: break-all; }
     .claude-tool-result { margin-top: 4px; padding-left: 12px; opacity: 0.75; white-space: pre-wrap; word-wrap: break-word; }
+    .claude-tool-pending { opacity: 0.5; margin-left: auto; }
+    .claude-tool-empty { margin-top: 4px; opacity: 0.45; font-style: italic; }
+    .tool-body { margin-top: 6px; }
+    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; padding: 6px 8px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.10)); border-radius: 3px; overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre; margin: 0; }
+    .tool-body.tool-body-error .tool-body-pre { background: var(--vscode-inputValidation-errorBackground, rgba(255,80,80,0.10)); border: 1px solid var(--vscode-errorForeground, rgba(255,80,80,0.5)); }
+    .tool-expand { margin-top: 4px; padding: 1px 8px; font-size: 11px; opacity: 0.7; background: transparent; color: var(--vscode-textLink-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 2px; cursor: pointer; }
+    .tool-expand:hover { opacity: 1; }
+    .diff { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; }
+    .diff-old, .diff-new { margin: 0; padding: 4px 8px; border-radius: 3px; overflow-x: auto; max-height: 240px; overflow-y: auto; white-space: pre; }
+    .diff-old { background: var(--vscode-diffEditor-removedTextBackground, rgba(255,80,80,0.12)); border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground, #d04444); }
+    .diff-new { background: var(--vscode-diffEditor-insertedTextBackground, rgba(80,200,80,0.12)); border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground, #44d044); }
     .md { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.5; }
     .md > *:first-child { margin-top: 0; }
     .md > *:last-child { margin-bottom: 0; }

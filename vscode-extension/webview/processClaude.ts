@@ -18,7 +18,11 @@ export type ClaudeBlock =
       toolUseId: string;
       name: string;
       input: Record<string, unknown>;
-      result?: { preview: string; truncated: boolean; isError: boolean };
+      result?: {
+        fullText: string;
+        truncated: boolean;
+        isError: boolean;
+      };
     }
   | {
       kind: 'result';
@@ -58,7 +62,10 @@ interface ContentBlock {
   is_error?: boolean;
 }
 
-const RESULT_PREVIEW_LIMIT = 200;
+// Cap stored tool-result text at 8 KB. Anything bigger gets a marker
+// appended; the user expands via the UI if they need to see all of it
+// (full content lives in claude's own transcript JSONL anyway).
+const RESULT_FULL_CAP = 8000;
 
 export function processClaude(events: unknown[]): ClaudeBlock[] {
   const blocks: ClaudeBlock[] = [];
@@ -135,17 +142,22 @@ export function processClaude(events: unknown[]): ClaudeBlock[] {
       for (const block of ev.message.content) {
         if (block.type !== 'tool_result' || !block.tool_use_id) continue;
         const idx = toolIdxByUseId.get(block.tool_use_id);
-        const text = stringifyContent(block.content);
-        const truncated = text.length > RESULT_PREVIEW_LIMIT;
-        const preview = truncated
-          ? text.slice(0, RESULT_PREVIEW_LIMIT) + '…'
-          : text;
+        const raw = stringifyContent(block.content);
+        const truncated = raw.length > RESULT_FULL_CAP;
+        const fullText = truncated
+          ? raw.slice(0, RESULT_FULL_CAP) +
+            `\n\n… [truncated, ${raw.length - RESULT_FULL_CAP} more chars]`
+          : raw;
         if (idx !== undefined) {
           const prev = blocks[idx];
           if (prev?.kind === 'tool') {
             blocks[idx] = {
               ...prev,
-              result: { preview, truncated, isError: !!block.is_error },
+              result: {
+                fullText,
+                truncated,
+                isError: !!block.is_error,
+              },
             };
           }
         }
