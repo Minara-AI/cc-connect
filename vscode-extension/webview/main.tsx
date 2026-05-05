@@ -244,6 +244,18 @@ function App(): React.ReactElement {
         </span>
         <span className="room-meta-nick">@{myNick}</span>
         <span className="room-meta-status">{status}</span>
+        {topic && (
+          <button
+            type="button"
+            className="room-meta-copy"
+            onClick={() => vscode.postMessage({ type: 'room:copy-ticket' })}
+            aria-label="Copy Ticket"
+            title="Copy this Room's Ticket to clipboard"
+          >
+            <i className="codicon codicon-clippy" />
+            <span>copy ticket</span>
+          </button>
+        )}
       </div>
       <div className="tab-strip" role="tablist">
         <button

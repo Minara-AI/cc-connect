@@ -223,6 +223,22 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
           } catch {
             // Not a real file, or no permission — silent.
           }
+        } else if (msg.type === 'room:copy-ticket') {
+          // Read the ticket fresh from chat-daemon.pid (JSON); the
+          // host-bg + chat-daemon both write it there at startup.
+          // Avoid threading it through webview state — peers' Tickets
+          // are capabilities, keep the surface area small.
+          const ticket = readRoomTicket(t);
+          if (!ticket) {
+            void vscode.window.showWarningMessage(
+              'cc-connect: no ticket on disk for this Room. Was it started here?',
+            );
+            return;
+          }
+          await vscode.env.clipboard.writeText(ticket);
+          void vscode.window.showInformationMessage(
+            'cc-connect: Ticket copied to clipboard.',
+          );
         } else if (msg.type === 'chat:attach') {
           // Open VSCode's native file picker, then drop whatever the
           // user selects into the Room. Cancellation = silent no-op.
@@ -312,6 +328,30 @@ function readMyNick(): string | undefined {
   }
 }
 
+function readRoomTicket(topic: string): string | undefined {
+  // Both host-bg and chat-daemon write a JSON pid-file at
+  // ~/.cc-connect/rooms/<topic>/chat-daemon.pid containing
+  // { pid, topic, ticket, started_at, relay, no_relay }.
+  // We just want the ticket — same Ticket the TUI prints + the
+  // clipboard-copy on `cc-connect room start`.
+  const fp = path.join(
+    os.homedir(),
+    '.cc-connect',
+    'rooms',
+    topic,
+    'chat-daemon.pid',
+  );
+  try {
+    const raw = fs.readFileSync(fp, 'utf8');
+    const parsed = JSON.parse(raw) as { ticket?: string };
+    return typeof parsed.ticket === 'string' && parsed.ticket.startsWith('cc1-')
+      ? parsed.ticket
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function workspaceCwd(): string | undefined {
   // Use the first workspace folder as the project root for Claude
   // transcripts. Multi-root workspaces fall back to the first folder
@@ -384,10 +424,13 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     #root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
     /* Header strip — three segments: topic, nick, status */
-    .room-meta { display: flex; gap: 10px; align-items: baseline; font-size: 10.5px; padding: 5px 10px; font-family: var(--vscode-editor-font-family, monospace); border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; opacity: 0.65; letter-spacing: 0.01em; }
+    .room-meta { display: flex; gap: 10px; align-items: center; font-size: 10.5px; padding: 4px 10px; font-family: var(--vscode-editor-font-family, monospace); border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; letter-spacing: 0.01em; }
     .room-meta-topic { color: var(--vscode-textLink-foreground); opacity: 0.9; }
     .room-meta-nick { opacity: 0.85; }
     .room-meta-status { margin-left: auto; opacity: 0.55; }
+    .room-meta-copy { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; border-radius: 10px; background: rgba(95,168,211,0.14); color: var(--vscode-charts-blue, #5fa8d3); border: 1px solid rgba(95,168,211,0.32); font-size: 10.5px; line-height: 1.5; cursor: pointer; font-family: var(--vscode-editor-font-family, monospace); }
+    .room-meta-copy:hover { background: rgba(95,168,211,0.26); }
+    .room-meta-copy .codicon { font-size: 11px; }
 
     /* Tab strip — single active tab fills the pane below */
     .tab-strip { display: flex; align-items: stretch; border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; background: var(--vscode-editor-background); }
@@ -578,8 +621,11 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .claude-tool-pending-out { opacity: 0.55; font-style: italic; font-size: 11px; }
     .claude-tool-empty { opacity: 0.45; font-style: italic; font-size: 11px; }
     .tool-body { margin: 0; }
-    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; padding: 4px 6px; background: var(--vscode-textCodeBlock-background); border-radius: 2px; overflow-x: auto; max-height: 200px; overflow-y: auto; white-space: pre; margin: 0; color: var(--vscode-editor-foreground); }
-    .tool-body.tool-body-error .tool-body-pre { background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); color: var(--vscode-errorForeground); }
+    /* No horizontal padding on the result <pre> so its first character
+       lines up with IN's first character — both sit right after the
+       parent flex gap. The bg color band still works visually. */
+    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; padding: 2px 0; background: transparent; border-radius: 0; overflow-x: auto; max-height: 200px; overflow-y: auto; white-space: pre; margin: 0; color: var(--vscode-editor-foreground); }
+    .tool-body.tool-body-error .tool-body-pre { background: var(--vscode-inputValidation-errorBackground); border-radius: 2px; padding: 2px 6px; border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); color: var(--vscode-errorForeground); }
     .tool-expand { margin-top: 4px; padding: 1px 8px; font-size: 11px; background: transparent; color: var(--vscode-textLink-foreground); border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; }
     .tool-expand:hover { background: var(--vscode-toolbar-hoverBackground); }
     .diff { margin: 0; display: flex; flex-direction: column; gap: 2px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; }
