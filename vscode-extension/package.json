@@ -85,6 +85,79 @@
         "title": "Refresh",
         "category": "cc-connect",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "cc-connect.openSetup",
+        "title": "Open setup walkthrough",
+        "category": "cc-connect"
+      },
+      {
+        "command": "cc-connect.copyBootstrapCommand",
+        "title": "Copy install command",
+        "category": "cc-connect"
+      }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "cc-connect.rooms",
+        "contents": "**cc-connect binary not found.**\n\nThe extension shells out to `~/.local/bin/cc-connect`, which isn't installed yet.\n\n[Open setup walkthrough](command:cc-connect.openSetup)\n\n[Copy install command](command:cc-connect.copyBootstrapCommand)\n\n[I just installed it — check again](command:cc-connect.refreshRooms)\n\nNo Rust required — the installer downloads a pre-built binary for your platform.",
+        "when": "cc-connect.setupRequired"
+      },
+      {
+        "view": "cc-connect.rooms",
+        "contents": "No Rooms yet.\n\n[Start a Room](command:cc-connect.startRoom)\n[Join a Room…](command:cc-connect.joinRoom)\n\nA Room is a topic both peers join. Tickets sync across machines so the substrate stays consistent.",
+        "when": "!cc-connect.setupRequired"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "cc-connect.setup",
+        "title": "Get started with cc-connect",
+        "description": "Install the cc-connect binary, restart Claude Code, and start your first peer-to-peer Room.",
+        "steps": [
+          {
+            "id": "install-binary",
+            "title": "Install the cc-connect binary",
+            "description": "The extension shells out to `~/.local/bin/cc-connect`. Run the bootstrap script in a terminal — it downloads a pre-built binary for your platform (no Rust required) and registers the UserPromptSubmit hook + MCP server in `~/.claude/`.\n\n[Copy install command](command:cc-connect.copyBootstrapCommand)\n\nOr run directly:\n\n```\ncurl -fsSL https://raw.githubusercontent.com/Minara-AI/cc-connect/main/scripts/bootstrap.sh | bash\n```\n\nFirst-time install takes ~30s on a fast network.",
+            "media": {
+              "markdown": "media/walkthrough/install.md"
+            },
+            "completionEvents": [
+              "onCommand:cc-connect.copyBootstrapCommand"
+            ]
+          },
+          {
+            "id": "restart-claude",
+            "title": "Restart Claude Code",
+            "description": "After the installer finishes, fully quit Claude Code (Cmd-Q on macOS) and reopen it so it picks up the new hook + MCP tools. The hook injects peers' chat messages into your next prompt; the MCP server gives Claude `cc_send`, `cc_at`, `cc_drop`, `cc_wait_for_mention`.",
+            "media": {
+              "markdown": "media/walkthrough/restart.md"
+            }
+          },
+          {
+            "id": "verify",
+            "title": "Verify with the doctor",
+            "description": "From a terminal: `cc-connect doctor` — checks the hook entry, MCP entry, identity-key permissions, binary timestamps. All green means you're ready.\n\nThen come back here and click \"Refresh\" — the Rooms tree should show the empty state instead of the setup prompt.\n\n[Refresh detection](command:cc-connect.refreshRooms)",
+            "media": {
+              "markdown": "media/walkthrough/verify.md"
+            },
+            "completionEvents": [
+              "onContext:!cc-connect.setupRequired"
+            ]
+          },
+          {
+            "id": "first-room",
+            "title": "Start your first Room",
+            "description": "Click the cc-connect activity-bar icon → click the **+** in the Rooms title bar (or run `cc-connect: Start Room` from the command palette). A new Room opens in the bottom panel; the Ticket lands on your clipboard. Share it with a peer — they paste it into **Join Room…** on their machine and you're connected.\n\n[Start a Room](command:cc-connect.startRoom)\n[Join a Room…](command:cc-connect.joinRoom)",
+            "media": {
+              "markdown": "media/walkthrough/first-room.md"
+            },
+            "completionEvents": [
+              "onCommand:cc-connect.startRoom",
+              "onCommand:cc-connect.joinRoom"
+            ]
+          }
+        ]
       }
     ],
     "menus": {
