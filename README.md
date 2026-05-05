@@ -63,9 +63,87 @@ First build pulls the iroh stack and the patched-vendored `ed25519` / `ed25519-d
 
 After install, every command is available as `cc-connect …` from any directory.
 
+### Build the VSCode extension (recommended)
+
+The default way to use cc-connect is in your editor — see [next section](#use-it-in-vscode-recommended). One extra build step:
+
+```bash
+cd vscode-extension
+bun install
+bun run compile
+bunx @vscode/vsce package
+code --install-extension cc-connect-vscode-0.1.0.vsix
+```
+
+Or, for development: open `vscode-extension/` in VSCode and press `F5` to launch an Extension Development Host.
+
 ---
 
-## Day-to-day use — only two commands
+## Use it in VSCode (recommended)
+
+The cleanest day-to-day experience is the editor extension. Both halves of cc-connect — the chat substrate and your Claude Code session — live inside one VSCode panel, no terminal multiplexer needed.
+
+```
+┌─ Activity Bar ────────────────────────────────────────────┐
+│  cc-connect            Rooms                              │
+│  ▸ team-A   ALIVE                                         │
+│  ▸ design   ALIVE                                         │
+│  ▸ debug    DORMANT                                       │
+└───────────────────────────────────────────────────────────┘
+┌─ Bottom panel ─────────────────────────────────────────────┐
+│  team-A…   @alice   ready          [📋 copy ticket]        │
+├─ [💬 Chat]  [✦ Claude  3] ─────────────────────────────────┤
+│  ┌─ chat ─────────────────────┐  ┌─ claude ─────────────┐ │
+│  │  @bob: postgres, we have it │  │ ○ Thought for 2s     │ │
+│  │  (me): yes, on it           │  │ ● cc_send · 13 bytes │ │
+│  │                              │  │ ● cc_wait_for_…      │ │
+│  │ [Message · @ to mention]    │  │ [Ask Claude…    ]🛡️→│ │
+│  └──────────────────────────────┘  └──────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Drag the Room panel to the **secondary side bar** for a vertical Slack-style split next to your editor.
+
+### Quick start
+
+1. Click the cc-connect activity-bar icon (left edge).
+2. Click **Start Room** in the Rooms tree title bar (or **Join Room** with a peer's ticket).
+3. The Room panel opens; Claude auto-greets the room and starts listening for `@you-cc` mentions.
+4. Click **copy ticket** at the top of the Room panel to share with a peer.
+
+### What's in the Room panel
+
+| Tab | What it gives you |
+|---|---|
+| **Chat** | IM-style rows: own messages right-aligned with iMessage bubbles, peers on the left. `@`-mention autocomplete from recent senders. `/` button opens a slash-command picker (`/drop`, `/at`). `+` button opens VSCode's native file picker → drops the file into the room. |
+| **Claude** | Your local Claude Code session for this Room. Tool calls render as IN/OUT cards with VSCode-native styling + per-tool codicons. Live "Thought for Xs" indicator. Full-markdown text replies. Active-editor chip above the input → click to attach `@<workspace-relative-path>` to your prompt. |
+
+### Permission modes (Claude pane bottom-right pill)
+
+Click the pill to cycle:
+
+| Mode | Behaviour |
+|---|---|
+| **auto** (default) | Every tool runs without asking. The cc-connect Room model is "trusted substrate"; this is the ergonomic default. |
+| **ask edits** | Claude can read freely; `Edit` / `Write` / `Bash` calls prompt for approval. |
+| **plan** | Claude can read but cannot run any side-effectful tool. |
+| **ask all** | Every tool call shows an inline **Allow / Deny / Always allow** bubble in the Claude log. The textarea greys out until you decide. |
+
+### Other niceties
+
+- **Conversation history** — the clock-icon button in the Claude pane lists every past Claude session for this workspace (parses `~/.claude/projects/`); click one to replay it read-only.
+- **Auto-greet on join** — uses the same `bootstrap-prompt.md` + `auto-reply-prompt.md` as the TUI launcher, so the embedded Claude knows it's in a Room and enters the listener loop without you typing anything.
+- **File-reference chips** — paths the user types in the Claude prompt render as clickable codicons; click to open the file in the editor.
+- **New chat** — `+` icon in the Claude pane head mints a fresh `sessionId` without closing the Room.
+- **Tickets are interchangeable** — Tickets minted by the VSCode extension are byte-identical to those from `cc-connect room start`. Use either side freely.
+
+The extension is **purely TypeScript** — no native code, no extra runtime deps beyond the cc-connect binaries you already installed. Source: [`vscode-extension/`](./vscode-extension).
+
+---
+
+## Or via the terminal (TUI alternative)
+
+The TUI experience is unchanged — same Room model, same Tickets, same hook injection. Pick whichever you prefer; mix freely between machines. Two commands cover everything:
 
 ```bash
 # Start a brand-new room. Spawns a background host daemon, opens the TUI.
