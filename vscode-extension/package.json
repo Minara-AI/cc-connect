@@ -27,13 +27,6 @@
           "title": "cc-connect",
           "icon": "media/cc-connect-activity.svg"
         }
-      ],
-      "panel": [
-        {
-          "id": "cc-connect-panel",
-          "title": "cc-connect Room",
-          "icon": "media/cc-connect-activity.svg"
-        }
       ]
     },
     "views": {
@@ -43,9 +36,7 @@
           "name": "Rooms",
           "icon": "media/cc-connect-activity.svg",
           "contextualTitle": "cc-connect"
-        }
-      ],
-      "cc-connect-panel": [
+        },
         {
           "id": "cc-connect.room",
           "name": "Room",

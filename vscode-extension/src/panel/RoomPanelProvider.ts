@@ -103,10 +103,19 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
               body: resp.err ?? 'unknown ipc error',
             });
           }
+        } else if (msg.type === 'claude:prompt') {
+          // Direct prompt to the local Claude — bypasses the chat
+          // substrate entirely, doesn't broadcast to peers.
+          const body = typeof msg.body === 'string' ? msg.body.trim() : '';
+          if (!body) return;
+          this.runner?.enqueue(body);
         }
       },
     );
 
+    // Tell webview to clear React state from any prior Room before
+    // streaming the new one's backfill in.
+    view.webview.postMessage({ type: 'room:reset' });
     view.webview.postMessage({
       type: 'room:state',
       body: { topic, myNick: this.myNick },
@@ -196,60 +205,80 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
   <title>cc-connect Room</title>
   <style>
     html, body { height: 100%; margin: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; padding: 8px 12px; color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; font-size: 13px; }
     #root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-    h1 { font-size: 13px; margin: 0 0 2px; font-weight: 600; }
-    .room-meta { font-size: 11px; opacity: 0.5; margin: 0 0 8px; font-family: var(--vscode-editor-font-family, monospace); }
-    h2 { margin: 0 0 6px; font-size: 12px; opacity: 0.7; font-weight: 500; }
-    .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; flex: 1; min-height: 0; }
-    .pane { display: flex; flex-direction: column; border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 8px 10px; min-height: 0; }
-    .muted { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; opacity: 0.6; }
-    .chat-log { flex: 1; min-height: 0; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.5; overflow-y: auto; }
-    .chat-line { display: grid; grid-template-columns: 60px 80px 1fr; gap: 8px; padding: 1px 0; align-items: baseline; }
-    .chat-line .ts { opacity: 0.4; font-variant-numeric: tabular-nums; }
-    .chat-line .nick { font-weight: 600; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .chat-line.me .nick { color: var(--vscode-textLink-foreground); }
-    .chat-line .body { opacity: 0.95; word-wrap: break-word; }
+
+    /* Header strip — compact meta line */
+    .room-meta { font-size: 11px; opacity: 0.55; padding: 4px 10px; font-family: var(--vscode-editor-font-family, monospace); border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; }
+
+    /* Vertical split: chat top, claude bottom, 50/50 */
+    .panes { flex: 1; display: grid; grid-template-rows: 1fr 1fr; min-height: 0; gap: 0; }
+    .pane { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--vscode-panel-border); }
+    .pane:last-child { border-bottom: none; }
+    .pane-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px; opacity: 0.7; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; flex: 0 0 auto; }
+    .pane-busy { opacity: 0.7; font-weight: 400; font-size: 10px; text-transform: none; letter-spacing: 0; }
+    .muted { font-size: 12px; opacity: 0.55; padding: 8px 10px; }
+
+    /* ========== Chat (IM-style) ========== */
+    .chat-log { flex: 1; min-height: 0; padding: 4px 10px 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    .chat-bubble { display: flex; gap: 8px; align-items: flex-end; max-width: 100%; }
+    .chat-bubble.me { flex-direction: row-reverse; }
+    .chat-avatar { flex: 0 0 24px; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--vscode-button-foreground); user-select: none; }
+    .chat-content { display: flex; flex-direction: column; gap: 2px; max-width: calc(100% - 64px); min-width: 0; }
+    .chat-bubble.me .chat-content { align-items: flex-end; }
+    .chat-meta { font-size: 10px; opacity: 0.5; font-family: var(--vscode-editor-font-family, monospace); padding: 0 4px; }
+    .chat-text { padding: 6px 10px; border-radius: 12px; line-height: 1.45; word-wrap: break-word; overflow-wrap: anywhere; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.10)); }
+    .chat-bubble.me .chat-text { background: var(--vscode-textLink-foreground); color: var(--vscode-editor-background); border-bottom-right-radius: 3px; }
+    .chat-bubble.peer .chat-text { border-bottom-left-radius: 3px; }
     .mention { font-weight: 500; color: var(--vscode-textLink-foreground); }
-    .mention.me { background: var(--vscode-editor-selectionHighlightBackground, rgba(255,200,0,0.18)); padding: 0 3px; border-radius: 2px; }
-    .mention.broadcast { color: var(--vscode-symbolIcon-eventForeground, var(--vscode-textLink-foreground)); font-style: italic; }
-    .chat-input { margin-top: 6px; flex: 0 0 auto; }
-    .chat-input textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 36px; max-height: 200px; padding: 6px 8px; font: inherit; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.4; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; outline: none; }
-    .chat-input textarea:focus { border-color: var(--vscode-focusBorder); }
-    .claude-log { flex: 1; min-height: 0; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.55; overflow-y: auto; }
-    .claude-row { padding: 2px 0; word-wrap: break-word; }
-    .claude-system { opacity: 0.5; }
-    .claude-hook { opacity: 0.4; padding-left: 12px; }
-    .claude-text { white-space: normal; opacity: 0.95; }
-    .claude-tool { color: var(--vscode-textLink-foreground); }
-    .claude-result { opacity: 0.6; padding-top: 4px; border-top: 1px dashed var(--vscode-panel-border); margin-top: 4px; }
+    .chat-bubble.me .mention { color: inherit; text-decoration: underline; }
+    .mention.me { background: var(--vscode-editor-selectionHighlightBackground, rgba(255,200,0,0.25)); padding: 0 3px; border-radius: 3px; }
+    .mention.broadcast { font-style: italic; }
+
+    /* Both panes' inputs share styling */
+    .pane-input { padding: 6px 10px 8px; flex: 0 0 auto; border-top: 1px solid var(--vscode-panel-border); }
+    .pane-input textarea { width: 100%; box-sizing: border-box; resize: none; min-height: 32px; max-height: 140px; padding: 6px 10px; font: inherit; font-size: 12.5px; line-height: 1.45; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 14px; outline: none; }
+    .pane-input textarea:focus { border-color: var(--vscode-focusBorder); }
+
+    /* ========== Claude (agent-style) ========== */
+    .claude-log { flex: 1; min-height: 0; padding: 4px 10px 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+    .claude-row { word-wrap: break-word; }
+    .claude-system { opacity: 0.45; font-size: 11px; padding: 4px 0; }
+    .claude-hook { opacity: 0.35; font-size: 11px; padding-left: 10px; }
+    .claude-text { line-height: 1.55; }
+    .claude-result { opacity: 0.5; font-size: 11px; padding: 6px 0 8px; border-top: 1px dashed var(--vscode-panel-border); margin-top: 8px; }
     .claude-error { color: var(--vscode-errorForeground); }
-    .claude-other { opacity: 0.35; }
-    .claude-tool-card { margin: 6px 0; padding: 6px 8px; border-left: 2px solid var(--vscode-textLink-foreground); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.08)); border-radius: 0 3px 3px 0; }
+    .claude-other { opacity: 0.3; font-size: 11px; }
+    .claude-turn-sep { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 10px; opacity: 0.45; text-transform: uppercase; letter-spacing: 0.06em; }
+    .claude-turn-sep::before, .claude-turn-sep::after { content: ''; flex: 1; height: 1px; background: var(--vscode-panel-border); }
+
+    /* Tool cards */
+    .claude-tool-card { margin: 4px 0; padding: 8px 10px; border-left: 2px solid var(--vscode-textLink-foreground); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.08)); border-radius: 0 4px 4px 0; }
     .claude-tool-card.claude-tool-error { border-left-color: var(--vscode-errorForeground); }
-    .claude-tool-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+    .claude-tool-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
     .claude-tool-name { font-weight: 600; color: var(--vscode-textLink-foreground); }
-    .claude-tool-input { opacity: 0.85; word-break: break-all; }
+    .claude-tool-input { opacity: 0.85; word-break: break-all; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; }
     .claude-tool-pending { opacity: 0.5; margin-left: auto; }
-    .claude-tool-empty { margin-top: 4px; opacity: 0.45; font-style: italic; }
+    .claude-tool-empty { margin-top: 4px; opacity: 0.45; font-style: italic; font-size: 11px; }
     .tool-body { margin-top: 6px; }
-    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; padding: 6px 8px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.10)); border-radius: 3px; overflow-x: auto; max-height: 240px; overflow-y: auto; white-space: pre; margin: 0; }
+    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; padding: 6px 8px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.10)); border-radius: 3px; overflow-x: auto; max-height: 200px; overflow-y: auto; white-space: pre; margin: 0; }
     .tool-body.tool-body-error .tool-body-pre { background: var(--vscode-inputValidation-errorBackground, rgba(255,80,80,0.10)); border: 1px solid var(--vscode-errorForeground, rgba(255,80,80,0.5)); }
     .tool-expand { margin-top: 4px; padding: 1px 8px; font-size: 11px; opacity: 0.7; background: transparent; color: var(--vscode-textLink-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 2px; cursor: pointer; }
     .tool-expand:hover { opacity: 1; }
-    .diff { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; }
-    .diff-old, .diff-new { margin: 0; padding: 4px 8px; border-radius: 3px; overflow-x: auto; max-height: 200px; overflow-y: auto; white-space: pre; }
+    .diff { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; }
+    .diff-old, .diff-new { margin: 0; padding: 4px 8px; border-radius: 3px; overflow-x: auto; max-height: 180px; overflow-y: auto; white-space: pre; }
     .diff-old { background: var(--vscode-diffEditor-removedTextBackground, rgba(255,80,80,0.12)); border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground, #d04444); }
     .diff-new { background: var(--vscode-diffEditor-insertedTextBackground, rgba(80,200,80,0.12)); border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground, #44d044); }
-    .pane-busy { opacity: 0.7; font-weight: 400; font-size: 11px; }
-    .md { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; font-size: 12.5px; line-height: 1.5; }
+
+    /* Markdown */
+    .md { font-size: 12.5px; line-height: 1.55; }
     .md > *:first-child { margin-top: 0; }
     .md > *:last-child { margin-bottom: 0; }
     .md p { margin: 4px 0; }
     .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 10px 0 4px; line-height: 1.3; font-weight: 600; }
-    .md h1 { font-size: 1.25em; }
-    .md h2 { font-size: 1.15em; }
-    .md h3 { font-size: 1.06em; }
+    .md h1 { font-size: 1.18em; }
+    .md h2 { font-size: 1.10em; }
+    .md h3 { font-size: 1.04em; }
     .md ul, .md ol { margin: 4px 0; padding-left: 22px; }
     .md li { margin: 2px 0; }
     .md li > p { margin: 0; }
@@ -262,7 +291,7 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .md table { border-collapse: collapse; margin: 6px 0; }
     .md th, .md td { border: 1px solid var(--vscode-panel-border); padding: 4px 8px; text-align: left; }
     .md th { background: rgba(127,127,127,0.08); font-weight: 600; }
-    .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
+    .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 10px 0; }
     .md strong { font-weight: 600; }
     .md em { font-style: italic; }
   </style>

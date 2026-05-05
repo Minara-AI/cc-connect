@@ -16,37 +16,93 @@ export interface ClaudeRunnerState {
 interface ClaudeProps {
   events: unknown[];
   state: ClaudeRunnerState;
+  onPrompt?: (body: string) => void;
 }
 
-export function Claude({ events, state }: ClaudeProps): React.ReactElement {
+export function Claude({
+  events,
+  state,
+  onPrompt,
+}: ClaudeProps): React.ReactElement {
   const blocks = React.useMemo(() => processClaude(events), [events]);
-  // Hide successful hook rows — they're nearly all the noise. Pending
-  // (transient) and failed hooks still surface so the user can see
-  // when something's actually wrong with the hook stack.
+  // Hide successful hook rows — pending and failed still surface.
   const visible = React.useMemo(
     () => blocks.filter((b) => !(b.kind === 'hook' && b.status === 'ok')),
     [blocks],
   );
   const scrollRef = useStickyScroll(visible.length);
+  const [draft, setDraft] = React.useState('');
+
   const busyLabel = state.busy
     ? state.queued > 0
       ? `· busy (${state.queued} queued)`
       : '· busy'
     : '';
+
+  const submit = (): void => {
+    const trimmed = draft.trim();
+    if (!trimmed || !onPrompt) return;
+    onPrompt(trimmed);
+    setDraft('');
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      submit();
+    }
+  };
+
   return (
     <div className="pane">
-      <h2>
+      <div className="pane-head">
         claude {busyLabel && <span className="pane-busy">{busyLabel}</span>}
-      </h2>
+      </div>
       <div className="claude-log" ref={scrollRef}>
         {visible.length === 0 ? (
-          <div className="muted">(idle — @-mention me from chat to start)</div>
+          <div className="muted">
+            (idle — type a prompt below or @-mention from chat)
+          </div>
         ) : (
-          visible.map((b, i) => <BlockRow key={i} block={b} />)
+          renderWithTurnSeparators(visible)
         )}
       </div>
+      {onPrompt && (
+        <div className="pane-input">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Ask Claude — Enter to send · Shift+Enter for newline"
+            rows={1}
+          />
+        </div>
+      )}
     </div>
   );
+}
+
+/** Walks the block list and inserts a turn separator before each
+ *  `session` event after the first one. Each session block marks the
+ *  start of a fresh `query()` invocation, i.e. a new @-mention turn. */
+function renderWithTurnSeparators(blocks: ClaudeBlock[]): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let turn = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.kind === 'session') {
+      turn += 1;
+      if (turn > 1) {
+        out.push(
+          <div key={`sep-${i}`} className="claude-turn-sep">
+            turn {turn}
+          </div>,
+        );
+      }
+    }
+    out.push(<BlockRow key={i} block={b} />);
+  }
+  return out;
 }
 
 function BlockRow({ block }: { block: ClaudeBlock }): React.ReactElement | null {
@@ -54,7 +110,7 @@ function BlockRow({ block }: { block: ClaudeBlock }): React.ReactElement | null 
     case 'session':
       return (
         <div className="claude-row claude-system">
-          ▸ session start ({block.sessionId.slice(0, 8)}…)
+          ▸ session ({block.sessionId.slice(0, 8)}…)
         </div>
       );
     case 'hook': {
@@ -65,7 +121,9 @@ function BlockRow({ block }: { block: ClaudeBlock }): React.ReactElement | null 
             ? '·'
             : '✗';
       const cls =
-        block.status === 'fail' ? 'claude-row claude-hook claude-error' : 'claude-row claude-hook';
+        block.status === 'fail'
+          ? 'claude-row claude-hook claude-error'
+          : 'claude-row claude-hook';
       return (
         <div className={cls}>
           {icon} {shortenHookName(block.hookName)}
@@ -159,15 +217,11 @@ function ToolResultView({
   return <ExpandableText text={fullText} isError={isError} />;
 }
 
-/** Strip the `mcp__<server>__` prefix off MCP tool names so they
- *  render as e.g. `cc_at` instead of `mcp__cc-connect__cc_at`. Native
- *  tools like Read / Edit / Bash pass through unchanged. */
 function shortenToolName(name: string): string {
   const m = /^mcp__[^_]+(?:[^_]|_[^_])*?__(.+)$/.exec(name);
   return m ? m[1] : name;
 }
 
-/** `PreToolUse:mcp__cc-connect__cc_send` → `PreToolUse · cc_send` */
 function shortenHookName(name: string): string {
   const colon = name.indexOf(':');
   if (colon < 0) return name;
@@ -176,10 +230,8 @@ function shortenHookName(name: string): string {
   return `${phase} · ${tool}`;
 }
 
-/** Pick the most useful field from common tools' input shape. */
 function summarizeInput(name: string, input: Record<string, unknown>): string {
   const short = shortenToolName(name);
-  // Tool-specific best-fit field.
   const candidates: Record<string, string[]> = {
     Read: ['file_path', 'path'],
     Edit: ['file_path', 'path'],

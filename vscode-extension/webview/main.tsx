@@ -31,7 +31,15 @@ function App(): React.ReactElement {
     const onMsg = (event: MessageEvent): void => {
       const msg = (event.data ?? {}) as { type?: string; body?: unknown };
       if (msg.type === 'host:ready') {
-        setStatus('host ready ✓ — tailing log.jsonl');
+        setStatus('ready');
+      } else if (msg.type === 'room:reset') {
+        // Switching rooms — wipe all per-Room webview state so the
+        // new Room's backfill streams in cleanly.
+        setMessages([]);
+        setClaudeEvents([]);
+        setClaudeState({ busy: false, queued: 0 });
+        setTopic('');
+        setStatus('switching…');
       } else if (msg.type === 'room:state') {
         const b = (msg.body ?? {}) as { topic?: string; myNick?: string };
         if (b.topic) setTopic(b.topic);
@@ -59,14 +67,22 @@ function App(): React.ReactElement {
     vscode.postMessage({ type: 'chat:send', body });
   };
 
+  const onPrompt = (body: string): void => {
+    vscode.postMessage({ type: 'claude:prompt', body });
+  };
+
   return (
     <React.Fragment>
-      <p className="room-meta">
-        topic: {topic ? `${topic.slice(0, 16)}…` : '(unknown)'} · me: {myNick} · {status}
-      </p>
+      <div className="room-meta">
+        {topic ? `${topic.slice(0, 16)}…` : '(no room)'} · me: {myNick} · {status}
+      </div>
       <div className="panes">
         <Chat messages={messages} myNick={myNick} onSend={onSend} />
-        <Claude events={claudeEvents} state={claudeState} />
+        <Claude
+          events={claudeEvents}
+          state={claudeState}
+          onPrompt={onPrompt}
+        />
       </div>
     </React.Fragment>
   );
