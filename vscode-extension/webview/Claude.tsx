@@ -89,7 +89,7 @@ export function Claude({
             aria-label="New chat"
             title="New Claude session — clears history, fresh sessionId"
           >
-            <NewChatIcon />
+            <i className="codicon codicon-add" />
           </button>
         )}
       </div>
@@ -125,7 +125,7 @@ export function Claude({
               aria-label="Stop"
               title="Stop the current turn"
             >
-              <StopIcon />
+              <i className="codicon codicon-debug-stop" />
             </button>
           ) : (
             <button
@@ -136,7 +136,7 @@ export function Claude({
               aria-label="Send"
               title="Send (Enter)"
             >
-              <SendIcon />
+              <i className="codicon codicon-send" />
             </button>
           )}
         </div>
@@ -321,52 +321,6 @@ function ToolResultView({
   return <ExpandableText text={fullText} isError={isError} />;
 }
 
-function SendIcon(): React.ReactElement {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M1.7 1.4a.6.6 0 0 1 .7-.05l11.7 6a.6.6 0 0 1 0 1.06l-11.7 6.1a.6.6 0 0 1-.86-.7l1.5-4.95a.6.6 0 0 1 .47-.42l5.34-.93a.2.2 0 0 0 0-.4l-5.34-.93a.6.6 0 0 1-.47-.42l-1.5-4.95a.6.6 0 0 1 .16-.6z" />
-    </svg>
-  );
-}
-
-function StopIcon(): React.ReactElement {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="12"
-      height="12"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <rect x="3" y="3" width="10" height="10" rx="1.5" />
-    </svg>
-  );
-}
-
-function NewChatIcon(): React.ReactElement {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="13"
-      height="13"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M2.5 4.5h7M2.5 8h5M2.5 11.5h6" />
-      <path d="M11 9.5v5M8.5 12h5" />
-    </svg>
-  );
-}
 
 function shortenToolName(name: string): string {
   const m = /^mcp__[^_]+(?:[^_]|_[^_])*?__(.+)$/.exec(name);

@@ -137,13 +137,14 @@
   "scripts": {
     "compile": "bun run compile:host && bun run compile:webview",
     "compile:host": "tsc -p .",
-    "compile:webview": "bun build ./webview/main.tsx --outdir ./dist/webview --format esm --target browser --jsx-factory React.createElement --jsx-fragment React.Fragment --sourcemap=external",
+    "compile:webview": "bun build ./webview/main.tsx --outdir ./dist/webview --format esm --target browser --jsx-factory React.createElement --jsx-fragment React.Fragment --sourcemap=external && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/",
     "watch": "tsc -p . --watch",
     "vscode:prepublish": "bun run compile",
     "probe:sdk": "bun run scripts/probe-sdk.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "@vscode/codicons": "^0.0.36",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",

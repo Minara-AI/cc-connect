@@ -16,8 +16,10 @@ declare global {
 
 const vscode = window.acquireVsCodeApi();
 
+type Tab = 'chat' | 'claude';
+
 function App(): React.ReactElement {
-  const [status, setStatus] = React.useState('waiting for host…');
+  const [status, setStatus] = React.useState('waiting…');
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [myNick, setMyNick] = React.useState('(me)');
   const [topic, setTopic] = React.useState('');
@@ -26,6 +28,17 @@ function App(): React.ReactElement {
     busy: false,
     queued: 0,
   });
+  const [activeTab, setActiveTab] = React.useState<Tab>('chat');
+  const [chatUnread, setChatUnread] = React.useState(0);
+  const [claudeUnread, setClaudeUnread] = React.useState(0);
+  // Track active tab via ref so async message handlers see the
+  // current value without re-binding the listener on each switch.
+  const activeTabRef = React.useRef(activeTab);
+  React.useEffect(() => {
+    activeTabRef.current = activeTab;
+    if (activeTab === 'chat') setChatUnread(0);
+    if (activeTab === 'claude') setClaudeUnread(0);
+  }, [activeTab]);
 
   React.useEffect(() => {
     const onMsg = (event: MessageEvent): void => {
@@ -33,13 +46,13 @@ function App(): React.ReactElement {
       if (msg.type === 'host:ready') {
         setStatus('ready');
       } else if (msg.type === 'room:reset') {
-        // Switching rooms — wipe all per-Room webview state so the
-        // new Room's backfill streams in cleanly.
         setMessages([]);
         setClaudeEvents([]);
         setClaudeState({ busy: false, queued: 0 });
         setTopic('');
         setStatus('switching…');
+        setChatUnread(0);
+        setClaudeUnread(0);
       } else if (msg.type === 'room:state') {
         const b = (msg.body ?? {}) as { topic?: string; myNick?: string };
         if (b.topic) setTopic(b.topic);
@@ -50,16 +63,25 @@ function App(): React.ReactElement {
           if (prev.some((x) => x.id === m.id)) return prev;
           return [...prev, m].sort((a, b) => a.id.localeCompare(b.id));
         });
+        if (activeTabRef.current !== 'chat') {
+          setChatUnread((n) => n + 1);
+        }
       } else if (msg.type === 'chat:send-error') {
         setStatus(`send failed: ${String(msg.body)}`);
       } else if (msg.type === 'claude:event') {
-        // Stamp with arrival time so processClaude can compute the
-        // "Thought for Xs" gap between session start and first content.
         const stamped =
           msg.body && typeof msg.body === 'object'
             ? { ...(msg.body as object), _receivedAt: Date.now() }
             : msg.body;
         setClaudeEvents((prev) => [...prev, stamped]);
+        if (activeTabRef.current !== 'claude') {
+          // Only count assistant-text-bearing events as "unread"; the
+          // hook/system spam is too noisy to surface in the badge.
+          const ev = msg.body as { type?: string };
+          if (ev?.type === 'assistant') {
+            setClaudeUnread((n) => n + 1);
+          }
+        }
       } else if (msg.type === 'claude:state') {
         const s = msg.body as ClaudeRunnerState;
         setClaudeState({ busy: !!s.busy, queued: s.queued ?? 0 });
@@ -86,8 +108,6 @@ function App(): React.ReactElement {
   };
 
   const onResetSession = (): void => {
-    // Wipe webview-side state immediately + ask the host to mint a
-    // fresh sessionId. Both effects converge on a clean Claude pane.
     setClaudeEvents([]);
     setClaudeState({ busy: false, queued: 0 });
     vscode.postMessage({ type: 'claude:reset-session' });
@@ -96,22 +116,63 @@ function App(): React.ReactElement {
   return (
     <React.Fragment>
       <div className="room-meta">
-        {topic ? `${topic.slice(0, 16)}…` : '(no room)'} · me: {myNick} · {status}
+        <span className="room-meta-topic">
+          {topic ? `${topic.slice(0, 14)}…` : '(no room)'}
+        </span>
+        <span className="room-meta-nick">@{myNick}</span>
+        <span className="room-meta-status">{status}</span>
+      </div>
+      <div className="tab-strip" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          className={`tab ${activeTab === 'chat' ? 'active' : ''}`}
+          aria-selected={activeTab === 'chat'}
+          onClick={() => setActiveTab('chat')}
+        >
+          <i className="codicon codicon-comment-discussion" />
+          <span>Chat</span>
+          {chatUnread > 0 && (
+            <span className="tab-badge">{chatUnread > 99 ? '99+' : chatUnread}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`tab ${activeTab === 'claude' ? 'active' : ''}`}
+          aria-selected={activeTab === 'claude'}
+          onClick={() => setActiveTab('claude')}
+        >
+          <i className="codicon codicon-sparkle" />
+          <span>Claude</span>
+          {claudeState.busy && <i className="codicon codicon-loading codicon-modifier-spin tab-busy" />}
+          {claudeUnread > 0 && !claudeState.busy && (
+            <span className="tab-badge">{claudeUnread > 99 ? '99+' : claudeUnread}</span>
+          )}
+        </button>
       </div>
       <div className="panes">
-        <Chat
-          messages={messages}
-          myNick={myNick}
-          onSend={onSend}
-          onAttach={onAttach}
-        />
-        <Claude
-          events={claudeEvents}
-          state={claudeState}
-          onPrompt={onPrompt}
-          onInterrupt={onInterrupt}
-          onResetSession={onResetSession}
-        />
+        <div
+          className={`pane-wrap ${activeTab === 'chat' ? 'active' : 'hidden'}`}
+        >
+          <Chat
+            messages={messages}
+            myNick={myNick}
+            onSend={onSend}
+            onAttach={onAttach}
+          />
+        </div>
+        <div
+          className={`pane-wrap ${activeTab === 'claude' ? 'active' : 'hidden'}`}
+        >
+          <Claude
+            events={claudeEvents}
+            state={claudeState}
+            onPrompt={onPrompt}
+            onInterrupt={onInterrupt}
+            onResetSession={onResetSession}
+          />
+        </div>
       </div>
     </React.Fragment>
   );

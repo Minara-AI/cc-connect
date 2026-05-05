@@ -35,12 +35,10 @@ export function Chat({
 }: ChatProps): React.ReactElement {
   const [draft, setDraft] = React.useState('');
 
-  // Mention popup state.
   const [mentionOpen, setMentionOpen] = React.useState(false);
   const [mentionCands, setMentionCands] = React.useState<string[]>([]);
   const [mentionIndex, setMentionIndex] = React.useState(0);
 
-  // Slash-command popup state.
   const [slashOpen, setSlashOpen] = React.useState(false);
   const [slashCands, setSlashCands] = React.useState<SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = React.useState(0);
@@ -58,15 +56,10 @@ export function Chat({
   );
 
   const updatePopups = (text: string, cursor: number): void => {
-    // Slash takes priority — only triggers when the message starts
-    // with `/` and the cursor is within the command name (no space
-    // yet). After the user adds the first arg, the popup hides.
     const upToCursor = text.slice(0, cursor);
     if (text.startsWith('/') && !upToCursor.includes(' ')) {
       const prefix = upToCursor.toLowerCase();
-      const cands = SLASH_COMMANDS.filter((c) =>
-        c.cmd.startsWith(prefix),
-      );
+      const cands = SLASH_COMMANDS.filter((c) => c.cmd.startsWith(prefix));
       if (cands.length > 0) {
         setSlashCands(cands);
         setSlashIndex(0);
@@ -77,7 +70,6 @@ export function Chat({
     }
     setSlashOpen(false);
 
-    // @-mention popup.
     const tok = currentAtToken(upToCursor);
     if (tok === null) {
       setMentionOpen(false);
@@ -202,16 +194,31 @@ export function Chat({
 
   const empty = draft.trim().length === 0;
 
+  // Group consecutive messages from the same nick within ~3 minutes
+  // — show a compact row (avatar + nick + ts) for the leading message
+  // and a continuation row (just body) for the rest. Reduces visual
+  // weight and matches Slack/Discord compact mode.
+  const grouped = React.useMemo(
+    () => groupMessages(messages, myNick),
+    [messages, myNick],
+  );
+
   return (
     <div className="pane">
-      <div className="pane-head">chat</div>
       <div className="chat-log" ref={scrollRef}>
-        {messages.length === 0 ? (
-          <div className="muted">(no messages yet)</div>
+        {grouped.length === 0 ? (
+          <div className="muted-empty">
+            <i className="codicon codicon-comment" />
+            <span>no messages yet</span>
+          </div>
         ) : (
-          messages.map((m) => (
-            <ChatBubble key={m.id} message={m} myNick={myNick} />
-          ))
+          grouped.map((row) =>
+            row.continuation ? (
+              <ChatContinuation key={row.message.id} row={row} myNick={myNick} />
+            ) : (
+              <ChatRow key={row.message.id} row={row} myNick={myNick} />
+            ),
+          )
         )}
       </div>
       {onSend && (
@@ -238,7 +245,7 @@ export function Chat({
               aria-label="Attach file"
               title="Attach a file"
             >
-              <PlusIcon />
+              <i className="codicon codicon-add" />
             </button>
           )}
           <button
@@ -248,14 +255,14 @@ export function Chat({
             aria-label="Slash commands"
             title="Slash commands"
           >
-            <SlashIcon />
+            <i className="codicon codicon-symbol-event" />
           </button>
           <textarea
             ref={textareaRef}
             value={draft}
             onChange={onChange}
             onKeyDown={onKeyDown}
-            placeholder="Message — Enter to send · Shift+Enter for newline · @ to mention"
+            placeholder="Message · Enter sends · @ to mention"
             rows={1}
           />
           <button
@@ -266,10 +273,85 @@ export function Chat({
             aria-label="Send"
             title="Send (Enter)"
           >
-            <SendIcon />
+            <i className="codicon codicon-send" />
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+interface ChatRowData {
+  message: Message;
+  isMe: boolean;
+  continuation: boolean;
+}
+
+function groupMessages(
+  messages: readonly Message[],
+  myNick: string,
+): ChatRowData[] {
+  const out: ChatRowData[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const isMe = m.nick === myNick;
+    const prev = messages[i - 1];
+    const continuation =
+      !!prev &&
+      prev.nick === m.nick &&
+      m.ts - prev.ts < 3 * 60 * 1000; /* 3 min */
+    out.push({ message: m, isMe, continuation });
+  }
+  return out;
+}
+
+function ChatRow({
+  row,
+  myNick,
+}: {
+  row: ChatRowData;
+  myNick: string;
+}): React.ReactElement {
+  const m = row.message;
+  const time = new Date(m.ts).toISOString().slice(11, 16);
+  const nick = m.nick ?? 'anon';
+  const initial = nick.charAt(0).toUpperCase() || '?';
+  const avatarColor = colorForNick(nick);
+  return (
+    <div className={`chat-row ${row.isMe ? 'me' : 'peer'}`}>
+      <div
+        className="chat-avatar"
+        style={{ background: avatarColor }}
+        title={nick}
+      >
+        {initial}
+      </div>
+      <div className="chat-body">
+        <div className="chat-byline">
+          <span className="chat-nick">{nick}</span>
+          <span className="chat-ts">{time}</span>
+        </div>
+        <div className="chat-text">{highlightMentions(m.body, myNick)}</div>
+      </div>
+    </div>
+  );
+}
+
+function ChatContinuation({
+  row,
+  myNick,
+}: {
+  row: ChatRowData;
+  myNick: string;
+}): React.ReactElement {
+  return (
+    <div className={`chat-row continuation ${row.isMe ? 'me' : 'peer'}`}>
+      <div className="chat-avatar-spacer" />
+      <div className="chat-body">
+        <div className="chat-text">
+          {highlightMentions(row.message.body, myNick)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -330,81 +412,6 @@ function SlashPopup({
         </div>
       ))}
     </div>
-  );
-}
-
-function ChatBubble({
-  message,
-  myNick,
-}: {
-  message: Message;
-  myNick: string;
-}): React.ReactElement {
-  const isMe = message.nick === myNick;
-  const time = new Date(message.ts).toISOString().slice(11, 16);
-  const nick = message.nick ?? 'anon';
-  const initial = nick.charAt(0).toUpperCase() || '?';
-  const avatarColor = colorForNick(nick);
-  return (
-    <div className={`chat-bubble ${isMe ? 'me' : 'peer'}`}>
-      <div
-        className="chat-avatar"
-        style={{ background: avatarColor }}
-        title={nick}
-      >
-        {initial}
-      </div>
-      <div className="chat-content">
-        <div className="chat-meta">
-          {isMe ? `${time} · ${nick}` : `${nick} · ${time}`}
-        </div>
-        <div className="chat-text">
-          {highlightMentions(message.body, myNick)}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SendIcon(): React.ReactElement {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M1.7 1.4a.6.6 0 0 1 .7-.05l11.7 6a.6.6 0 0 1 0 1.06l-11.7 6.1a.6.6 0 0 1-.86-.7l1.5-4.95a.6.6 0 0 1 .47-.42l5.34-.93a.2.2 0 0 0 0-.4l-5.34-.93a.6.6 0 0 1-.47-.42l-1.5-4.95a.6.6 0 0 1 .16-.6z" />
-    </svg>
-  );
-}
-
-function PlusIcon(): React.ReactElement {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M8 2.5a.7.7 0 0 1 .7.7V7.3h4.1a.7.7 0 1 1 0 1.4H8.7v4.1a.7.7 0 1 1-1.4 0V8.7H3.2a.7.7 0 1 1 0-1.4h4.1V3.2A.7.7 0 0 1 8 2.5z" />
-    </svg>
-  );
-}
-
-function SlashIcon(): React.ReactElement {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M10.6 2.4a.7.7 0 0 1 .43.85l-3.6 10.4a.7.7 0 0 1-1.32-.45l3.6-10.4a.7.7 0 0 1 .89-.4z" />
-    </svg>
   );
 }
 

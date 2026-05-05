@@ -214,6 +214,9 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(distRoot, 'main.js'),
   );
+  const codiconCssUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(distRoot, 'codicon.css'),
+  );
   const csp = [
     "default-src 'none'",
     `script-src ${webview.cspSource}`,
@@ -227,41 +230,60 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <title>cc-connect Room</title>
+  <link rel="stylesheet" href="${codiconCssUri}">
   <style>
     html, body { height: 100%; margin: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; font-size: 13px; }
     #root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
-    /* Header strip — compact meta line */
-    .room-meta { font-size: 11px; opacity: 0.55; padding: 4px 10px; font-family: var(--vscode-editor-font-family, monospace); border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; }
+    /* Header strip — three segments: topic, nick, status */
+    .room-meta { display: flex; gap: 10px; align-items: baseline; font-size: 10.5px; padding: 5px 10px; font-family: var(--vscode-editor-font-family, monospace); border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; opacity: 0.65; letter-spacing: 0.01em; }
+    .room-meta-topic { color: var(--vscode-textLink-foreground); opacity: 0.9; }
+    .room-meta-nick { opacity: 0.85; }
+    .room-meta-status { margin-left: auto; opacity: 0.55; }
 
-    /* Vertical split: chat top, claude bottom, 50/50 */
-    .panes { flex: 1; display: grid; grid-template-rows: 1fr 1fr; min-height: 0; gap: 0; }
-    .pane { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--vscode-panel-border); }
-    .pane:last-child { border-bottom: none; }
-    .pane-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px; opacity: 0.85; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; flex: 0 0 auto; }
+    /* Tab strip — single active tab fills the pane below */
+    .tab-strip { display: flex; align-items: stretch; border-bottom: 1px solid var(--vscode-panel-border); flex: 0 0 auto; background: var(--vscode-editor-background); }
+    .tab { display: flex; align-items: center; gap: 6px; padding: 9px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--vscode-foreground); opacity: 0.5; background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: opacity 0.12s, border-color 0.12s, color 0.12s; }
+    .tab:hover { opacity: 0.8; }
+    .tab.active { opacity: 1; border-bottom-color: var(--vscode-textLink-foreground); color: var(--vscode-textLink-foreground); }
+    .tab .codicon { font-size: 14px; }
+    .tab-badge { background: var(--vscode-textLink-foreground); color: var(--vscode-editor-background); font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 6px; line-height: 1.4; min-width: 12px; text-align: center; letter-spacing: 0; }
+    .tab-busy { font-size: 12px; opacity: 0.7; }
+    .codicon-modifier-spin { animation: codicon-spin 1.2s linear infinite; }
+    @keyframes codicon-spin { to { transform: rotate(360deg); } }
+
+    /* Tab pane swap — keep both mounted, hide the inactive one */
+    .panes { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .pane-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .pane-wrap.hidden { display: none; }
+    .pane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+    .pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px; font-size: 10.5px; opacity: 0.6; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto; border-bottom: 1px solid var(--vscode-panel-border); }
     .pane-head > span:first-child { flex: 1; }
-    .head-btn { padding: 2px 6px; background: transparent; color: var(--vscode-foreground); opacity: 0.6; border: none; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s, background 0.12s; }
+    .head-btn { padding: 3px 6px; background: transparent; color: var(--vscode-foreground); opacity: 0.6; border: none; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s, background 0.12s; }
     .head-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.15)); }
-    .head-btn svg { display: block; }
+    .head-btn .codicon { font-size: 14px; }
     .pane-busy { opacity: 0.7; font-weight: 400; font-size: 10px; text-transform: none; letter-spacing: 0; }
     .muted { font-size: 12px; opacity: 0.55; padding: 8px 10px; }
+    .muted-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px 10px; opacity: 0.4; font-size: 11px; flex: 1; }
+    .muted-empty .codicon { font-size: 28px; opacity: 0.5; }
 
-    /* ========== Chat (IM-style) ========== */
-    .chat-log { flex: 1; min-height: 0; padding: 4px 10px 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-    .chat-bubble { display: flex; gap: 8px; align-items: flex-end; max-width: 100%; }
-    .chat-bubble.me { flex-direction: row-reverse; }
-    .chat-avatar { flex: 0 0 24px; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--vscode-button-foreground); user-select: none; }
-    .chat-content { display: flex; flex-direction: column; gap: 2px; max-width: calc(100% - 64px); min-width: 0; }
-    .chat-bubble.me .chat-content { align-items: flex-end; }
-    .chat-meta { font-size: 10px; opacity: 0.5; font-family: var(--vscode-editor-font-family, monospace); padding: 0 4px; }
-    .chat-text { padding: 6px 10px; border-radius: 12px; line-height: 1.45; word-wrap: break-word; overflow-wrap: anywhere; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.10)); }
-    .chat-bubble.me .chat-text { background: var(--vscode-textLink-foreground); color: var(--vscode-editor-background); border-bottom-right-radius: 3px; }
-    .chat-bubble.peer .chat-text { border-bottom-left-radius: 3px; }
+    /* ========== Chat (compact terminal-style rows) ========== */
+    .chat-log { flex: 1; min-height: 0; padding: 6px 10px 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .chat-row { display: flex; gap: 8px; align-items: flex-start; animation: cc-fade-in 0.18s ease-out; }
+    .chat-row.continuation { gap: 8px; margin-top: -6px; }
+    .chat-avatar { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; color: var(--vscode-editor-background); user-select: none; line-height: 1; }
+    .chat-avatar-spacer { flex: 0 0 22px; }
+    .chat-body { flex: 1; min-width: 0; }
+    .chat-byline { display: flex; align-items: baseline; gap: 8px; font-size: 11px; line-height: 1.2; }
+    .chat-nick { font-weight: 600; color: var(--vscode-foreground); }
+    .chat-row.me .chat-nick { color: var(--vscode-textLink-foreground); }
+    .chat-ts { font-size: 10px; opacity: 0.4; font-family: var(--vscode-editor-font-family, monospace); font-variant-numeric: tabular-nums; }
+    .chat-text { font-size: 12.5px; line-height: 1.5; word-wrap: break-word; overflow-wrap: anywhere; padding-top: 1px; }
     .mention { font-weight: 500; color: var(--vscode-textLink-foreground); }
-    .chat-bubble.me .mention { color: inherit; text-decoration: underline; }
-    .mention.me { background: var(--vscode-editor-selectionHighlightBackground, rgba(255,200,0,0.25)); padding: 0 3px; border-radius: 3px; }
+    .mention.me { background: var(--vscode-editor-selectionHighlightBackground, rgba(255,200,0,0.22)); padding: 0 3px; border-radius: 3px; font-weight: 600; }
     .mention.broadcast { font-style: italic; }
+    @keyframes cc-fade-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 
     /* Both panes' inputs share styling */
     .pane-input { position: relative; padding: 6px 10px 8px; flex: 0 0 auto; border-top: 1px solid var(--vscode-panel-border); display: flex; align-items: flex-end; gap: 6px; }
@@ -270,16 +292,16 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .send-btn { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border-radius: 50%; background: var(--vscode-textLink-foreground); color: var(--vscode-editor-background); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s; }
     .send-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, var(--vscode-textLink-foreground)); opacity: 0.9; }
     .send-btn:disabled { opacity: 0.25; cursor: not-allowed; }
-    .send-btn svg { display: block; }
-    .icon-btn { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border-radius: 50%; background: transparent; color: var(--vscode-foreground); opacity: 0.55; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s, background 0.12s; }
+    .send-btn .codicon { font-size: 14px; }
+    .icon-btn { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border-radius: 4px; background: transparent; color: var(--vscode-foreground); opacity: 0.55; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s, background 0.12s; }
     .icon-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.15)); }
-    .icon-btn svg { display: block; }
+    .icon-btn .codicon { font-size: 15px; }
     .slash-popup .mention-item { display: flex; gap: 8px; align-items: baseline; }
     .slash-cmd { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-textLink-foreground); font-weight: 600; }
     .slash-label { opacity: 0.7; font-size: 11px; }
     .stop-btn { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border-radius: 50%; background: var(--vscode-errorForeground, #d04444); color: var(--vscode-editor-background); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s; }
     .stop-btn:hover { opacity: 0.85; }
-    .stop-btn svg { display: block; }
+    .stop-btn .codicon { font-size: 13px; }
     /* Mention popup — anchored above the chat input */
     .mention-popup { position: absolute; bottom: calc(100% - 4px); left: 10px; right: 10px; max-height: 160px; overflow-y: auto; background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background, var(--vscode-input-background))); border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border)); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); z-index: 10; padding: 2px; font-size: 12px; }
     .mention-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; user-select: none; }
