@@ -23,6 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('cc-connect.joinRoom', () => {
       void joinRoom(context);
     }),
+    vscode.commands.registerCommand('cc-connect.showTicket', () => {
+      void showTicket();
+    }),
   );
 }
 
@@ -226,6 +229,40 @@ async function pickTopic(): Promise<string | undefined> {
     matchOnDescription: true,
   });
   return picked?.topic;
+}
+
+async function showTicket(): Promise<void> {
+  const topic = await pickTopic();
+  if (!topic) return;
+  const ticket = readTicketForTopic(topic);
+  if (!ticket) {
+    void vscode.window.showErrorMessage(
+      `cc-connect: no ticket recorded for ${topic.slice(0, 12)}… ` +
+        '(daemon not running, or PID file missing).',
+    );
+    return;
+  }
+  await vscode.env.clipboard.writeText(ticket);
+  void vscode.window.showInformationMessage(
+    `cc-connect: ticket for ${topic.slice(0, 12)}… copied to clipboard.`,
+  );
+}
+
+function readTicketForTopic(topic: string): string | undefined {
+  const pidPath = path.join(
+    os.homedir(),
+    '.cc-connect',
+    'rooms',
+    topic,
+    'chat-daemon.pid',
+  );
+  try {
+    const raw = fs.readFileSync(pidPath, 'utf8');
+    const parsed = JSON.parse(raw) as { ticket?: string };
+    return typeof parsed.ticket === 'string' ? parsed.ticket : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readMyNick(): string | undefined {
