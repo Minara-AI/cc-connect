@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { createClaudeRunner } from './host/claude_runner';
 import { startChatDaemon, startHostBg } from './host/daemon';
-import { ccSend } from './host/ipc';
+import { ccDrop, ccSend } from './host/ipc';
 import { tailLog, type LogTailHandle } from './host/log_tail';
 import { shouldWakeClaude } from './host/mention';
 import type { Message } from './types';
@@ -126,7 +126,12 @@ function openRoomPanelForTopic(
       } else if (msg.type === 'chat:send') {
         const body = typeof msg.body === 'string' ? msg.body.trim() : '';
         if (!body) return;
-        const resp = await ccSend(topic, body);
+        // Slash-command parse. v0 supports `/drop <path>`. Anything
+        // else passes through as a chat message.
+        const dropMatch = /^\/drop\s+(.+)$/.exec(body);
+        const resp = dropMatch
+          ? await ccDrop(topic, dropMatch[1].trim())
+          : await ccSend(topic, body);
         if (!resp.ok) {
           panel.webview.postMessage({
             type: 'chat:send-error',

@@ -45,7 +45,7 @@ export function Chat({ messages, myNick, onSend }: ChatProps): React.ReactElemen
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Type a message — Enter to send, Shift+Enter for newline"
+            placeholder="Type a message — Enter to send, Shift+Enter for newline. /drop <path> to share a file."
             rows={2}
           />
         </div>

@@ -101,7 +101,7 @@ export async function ccAt(
 
 export async function ccDrop(
   topic: string,
-  path: string,
+  filePath: string,
 ): Promise<IpcResponse> {
-  return ipcCall(topic, { action: 'drop', path, source: 'human' });
+  return ipcCall(topic, { action: 'drop', path: filePath, source: 'human' });
 }
