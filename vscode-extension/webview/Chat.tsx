@@ -5,6 +5,7 @@ import {
   currentAtToken,
   mentionCandidates,
 } from './mentionAutocomplete';
+import { focusTextareaAt } from './textareaFocus';
 import type { Message } from './types';
 import { useAutosize } from './useAutosize';
 import { useStickyScroll } from './useStickyScroll';
@@ -98,22 +99,13 @@ export function Chat({
     const next = completeAt(draft, full);
     setDraft(next);
     setMentionOpen(false);
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) ta.setSelectionRange(next.length, next.length);
-    });
+    focusTextareaAt(textareaRef, next.length);
   };
 
   const acceptSlash = (template: string): void => {
     setDraft(template);
     setSlashOpen(false);
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(template.length, template.length);
-      }
-    });
+    focusTextareaAt(textareaRef, template.length);
   };
 
   const openSlashPicker = (): void => {
@@ -122,13 +114,7 @@ export function Chat({
     setSlashIndex(0);
     setSlashOpen(true);
     setMentionOpen(false);
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(1, 1);
-      }
-    });
+    focusTextareaAt(textareaRef, 1);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -313,7 +299,12 @@ function ChatRow({
   myNick: string;
 }): React.ReactElement {
   const m = row.message;
-  const time = new Date(m.ts).toISOString().slice(11, 16);
+  // Local timezone, not UTC. `toISOString().slice(11,16)` showed UTC,
+  // which doesn't match peers' wall clocks across zones.
+  const time = new Date(m.ts).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
   const nick = m.nick ?? 'anon';
   const initial = nick.charAt(0).toUpperCase() || '?';
   const avatarColor = colorForNick(nick);

@@ -155,7 +155,21 @@ export function createClaudeRunner(
   const suggestionsByRequestId = new Map<string, PermissionUpdate[]>();
   let permissionSeq = 0;
 
+  // Cleanup callbacks (mostly abort-listener removal) registered per
+  // request, called from resolvePermission so we don't leak listeners
+  // across many tool calls in one turn.
+  const cleanupByRequestId = new Map<string, () => void>();
+
   const canUseTool: CanUseTool = (toolName, input, ctx) => {
+    // The SDK can fire `canUseTool` mid-turn even after the user
+    // toggled out of `default` mode (the new mode propagates on the
+    // *next* tool call, not the in-flight one). Honor the new
+    // posture immediately by auto-allowing — otherwise a ghost
+    // permission bubble pops for an action the user already
+    // implicitly authorised by switching modes.
+    if (currentMode !== 'default') {
+      return Promise.resolve({ behavior: 'allow' });
+    }
     return new Promise<PermissionResult>((resolve) => {
       const requestId = `perm-${++permissionSeq}`;
       pendingPermissions.set(requestId, resolve);
@@ -171,6 +185,7 @@ export function createClaudeRunner(
         if (fn) {
           pendingPermissions.delete(requestId);
           suggestionsByRequestId.delete(requestId);
+          cleanupByRequestId.delete(requestId);
           fn({
             behavior: 'deny',
             message: 'permission request aborted',
@@ -179,6 +194,9 @@ export function createClaudeRunner(
         }
       };
       ctx.signal.addEventListener('abort', onAbort, { once: true });
+      cleanupByRequestId.set(requestId, () => {
+        ctx.signal.removeEventListener('abort', onAbort);
+      });
 
       const event: PermissionRequestEvent = {
         type: 'cc:permission-request',
@@ -199,6 +217,8 @@ export function createClaudeRunner(
         // Webview unreachable — auto-deny so the turn doesn't hang.
         pendingPermissions.delete(requestId);
         suggestionsByRequestId.delete(requestId);
+        cleanupByRequestId.get(requestId)?.();
+        cleanupByRequestId.delete(requestId);
         resolve({
           behavior: 'deny',
           message: 'webview unreachable; cannot prompt for approval',
@@ -209,15 +229,17 @@ export function createClaudeRunner(
   };
 
   function denyAllPending(reason: string): void {
-    for (const [, fn] of pendingPermissions) {
+    for (const [requestId, fn] of pendingPermissions) {
       try {
         fn({ behavior: 'deny', message: reason, interrupt: true });
       } catch {
         /* swallow */
       }
+      cleanupByRequestId.get(requestId)?.();
     }
     pendingPermissions.clear();
     suggestionsByRequestId.clear();
+    cleanupByRequestId.clear();
   }
 
   // Auto-greet on Room join — mirrors the TUI's launcher-script path
@@ -225,9 +247,14 @@ export function createClaudeRunner(
   // first user message). We deliberately do NOT re-queue this on
   // `resetSession()` — that would re-broadcast a greeting to peers
   // every time the user clicks New chat, which is noisy.
-  if (opts.initialPrompt && opts.initialPrompt.trim()) {
-    queue.push(opts.initialPrompt.trim());
-  }
+  //
+  // `bootstrapPrompt` (when truthy) is the *one* turn that must
+  // always run with bypassPermissions: the user didn't initiate it,
+  // so popping a permission bubble for the auto-greet's `cc_send`
+  // would be a confusing first-run UX. runOne checks identity to
+  // decide whether to honor `currentMode` or force-bypass.
+  const bootstrapPrompt = opts.initialPrompt?.trim() || '';
+  if (bootstrapPrompt) queue.push(bootstrapPrompt);
 
   function publishState(): void {
     opts.onStateChange({
@@ -253,12 +280,21 @@ export function createClaudeRunner(
             },
           }
         : {};
-    // Only attach canUseTool when the user is actually in default
-    // mode; the bypassPermissions / acceptEdits / plan paths short-
-    // circuit the callback at the SDK level, and the headless
-    // ZodError pitfall is in *unconditional* canUseTool wiring.
+    // The auto-greet always runs with `bypassPermissions` regardless
+    // of the UI pill — the user didn't initiate it, so a permission
+    // bubble for `cc_send` would be a confusing first-run experience.
+    // After the bootstrap turn, currentMode (the user's actual choice)
+    // applies to every subsequent turn.
+    const isBootstrap = !!bootstrapPrompt && prompt === bootstrapPrompt;
+    const effectiveMode: SupportedPermissionMode = isBootstrap
+      ? 'bypassPermissions'
+      : currentMode;
+    // Only attach canUseTool when the *effective* mode is `default`;
+    // the bypassPermissions / acceptEdits / plan paths short-circuit
+    // the callback at the SDK level, and the headless ZodError
+    // pitfall is in *unconditional* canUseTool wiring.
     const permissionOpt: { canUseTool?: CanUseTool } =
-      currentMode === 'default' ? { canUseTool } : {};
+      effectiveMode === 'default' ? { canUseTool } : {};
     const q = query({
       prompt,
       options: {
@@ -269,11 +305,11 @@ export function createClaudeRunner(
         includeHookEvents: true,
         abortController: ac,
         env: { ...process.env, CC_CONNECT_ROOM: opts.topic },
-        // The user-selected mode. `bypassPermissions` is the v0
-        // default; `acceptEdits` and `plan` are toggleable via the
-        // pane-head pill. `default` opts into per-tool approval via
-        // the canUseTool callback above.
-        permissionMode: currentMode as PermissionMode,
+        // Effective mode for this turn — usually `currentMode`, but
+        // forced to `bypassPermissions` for the bootstrap (auto-greet)
+        // turn so peers don't see Claude blocked on a permission
+        // dialog the user hasn't even seen yet.
+        permissionMode: effectiveMode as PermissionMode,
       },
     });
     currentTurnQ = q;
@@ -345,15 +381,17 @@ export function createClaudeRunner(
       // permissive posture; making them click each lingering bubble
       // would feel like the toggle didn't take.
       if (wasDefault && mode !== 'default' && pendingPermissions.size > 0) {
-        for (const [, fn] of pendingPermissions) {
+        for (const [requestId, fn] of pendingPermissions) {
           try {
             fn({ behavior: 'allow' });
           } catch {
             /* swallow */
           }
+          cleanupByRequestId.get(requestId)?.();
         }
         pendingPermissions.clear();
         suggestionsByRequestId.clear();
+        cleanupByRequestId.clear();
       }
       // Flip the in-flight conversation immediately if there is one.
       // Errors are swallowed: the next turn will pick up the new mode
@@ -375,6 +413,8 @@ export function createClaudeRunner(
       pendingPermissions.delete(requestId);
       const suggestions = suggestionsByRequestId.get(requestId);
       suggestionsByRequestId.delete(requestId);
+      cleanupByRequestId.get(requestId)?.();
+      cleanupByRequestId.delete(requestId);
 
       let result: PermissionResult;
       if (behavior === 'always-allow') {

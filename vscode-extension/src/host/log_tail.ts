@@ -116,6 +116,15 @@ function tailJsonl<T>(
           }
           nl = buf.indexOf('\n');
         }
+        // POSIX `read(2)` is allowed to return fewer bytes than
+        // requested. With a watch-driven tail, a short read followed
+        // by a quiet file would silently drop the unread bytes until
+        // the next append nudged the watcher. Re-trigger immediately
+        // if size > offset; readMore re-stats and bails when caught
+        // up.
+        if (bytesRead < len) {
+          readMore();
+        }
       });
     });
   }

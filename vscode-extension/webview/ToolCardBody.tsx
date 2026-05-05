@@ -51,24 +51,15 @@ export function EditDiffView({
   const oldText = typeof input.old_string === 'string' ? input.old_string : '';
   const newText = typeof input.new_string === 'string' ? input.new_string : '';
   if (!oldText && !newText) return <></>;
+  // Hoist the splits so we don't re-compute `.split('\n').length` per
+  // iteration (was N+1 splits per render). Equivalent rendering — each
+  // line gets a `+ ` / `- ` prefix and is rejoined with newlines.
+  const oldLines = oldText ? oldText.split('\n').map((l) => `- ${l}`) : [];
+  const newLines = newText ? newText.split('\n').map((l) => `+ ${l}`) : [];
   return (
     <div className="diff">
-      {oldText && (
-        <pre className="diff-old">
-          {oldText
-            .split('\n')
-            .map((l, i) => `- ${l}` + (i === oldText.split('\n').length - 1 ? '' : '\n'))
-            .join('')}
-        </pre>
-      )}
-      {newText && (
-        <pre className="diff-new">
-          {newText
-            .split('\n')
-            .map((l, i) => `+ ${l}` + (i === newText.split('\n').length - 1 ? '' : '\n'))
-            .join('')}
-        </pre>
-      )}
+      {oldText && <pre className="diff-old">{oldLines.join('\n')}</pre>}
+      {newText && <pre className="diff-new">{newLines.join('\n')}</pre>}
     </div>
   );
 }

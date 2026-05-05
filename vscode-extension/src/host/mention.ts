@@ -8,6 +8,11 @@
 // peers chatting "yo @yjj seen this?" should not auto-summon yjj's
 // Claude. To explicitly address the AI peer, use `@<self>-cc`. To
 // address every AI in the room at once, use a broadcast token.
+//
+// ⚠ MUST MIRROR `webview/mentionRules.ts`. The webview's tsconfig
+// rootDir is `webview/` and the host's is `src/`, so neither side can
+// import across the boundary. If you change BROADCAST_TOKENS or the
+// nick-cont character class, mirror it on the webview side.
 
 const BROADCAST_TOKENS = ['cc', 'claude', 'all', 'here'] as const;
 

@@ -152,8 +152,8 @@ async function openRoomInPanel(topic: string): Promise<void> {
 
 async function startRoom(): Promise<void> {
   if (!(await ensureSetup())) return;
-  let ticket: string;
-  let topic: string;
+  let ticket: string | undefined;
+  let topic: string | undefined;
   try {
     await vscode.window.withProgress(
       {
@@ -172,12 +172,13 @@ async function startRoom(): Promise<void> {
     );
     return;
   }
-  await vscode.env.clipboard.writeText(ticket!);
+  if (!ticket || !topic) return; // unreachable — withProgress only resolves on success — but appeases TS
+  await vscode.env.clipboard.writeText(ticket);
   void vscode.window.showInformationMessage(
     'cc-connect: Room started. Ticket copied to clipboard.',
   );
   roomsProvider?.refresh();
-  await openRoomInPanel(topic!);
+  await openRoomInPanel(topic);
 }
 
 async function joinRoom(): Promise<void> {

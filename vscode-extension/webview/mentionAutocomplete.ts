@@ -2,7 +2,7 @@
 // in turn of crates/cc-connect-tui/src/mention.rs). Pure functions;
 // the popup state machine lives in Chat.tsx.
 
-const BROADCAST_TOKENS = ['cc', 'claude', 'all', 'here'] as const;
+import { BROADCAST_TOKENS } from './mentionRules';
 
 /** If `input` ends with an in-progress `@<prefix>` (no whitespace
  *  after the last `@`), return the prefix without the `@`. Returns

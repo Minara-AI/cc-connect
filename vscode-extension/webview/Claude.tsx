@@ -1,12 +1,14 @@
 import * as React from 'react';
 import { fileBasename, splitForFileRefs } from './fileRefs';
-import { MarkdownContent } from './MarkdownContent';
-import { processClaude, type ClaudeBlock } from './processClaude';
 import {
-  BashResultView,
-  EditDiffView,
-  ExpandableText,
-} from './ToolCardBody';
+  HistoryPicker,
+  type SessionMetaLite,
+} from './HistoryPicker';
+import { MarkdownContent } from './MarkdownContent';
+import { PermissionBubble } from './PermissionBubble';
+import { processClaude, type ClaudeBlock } from './processClaude';
+import { focusTextareaAt } from './textareaFocus';
+import { ToolCard, shortenHookName } from './ToolCard';
 import { useAutosize } from './useAutosize';
 import { useStickyScroll } from './useStickyScroll';
 
@@ -46,12 +48,10 @@ const MODE_ORDER: SupportedPermissionMode[] = [
   'default',
 ];
 
-export interface SessionMetaLite {
-  sessionId: string;
-  firstPrompt: string;
-  mtimeMs: number;
-  messageCount: number;
-}
+// Re-export so existing `import { SessionMetaLite } from './Claude'`
+// callsites (main.tsx) still resolve. The canonical definition now
+// lives next to its primary consumer in HistoryPicker.tsx.
+export type { SessionMetaLite } from './HistoryPicker';
 
 interface ClaudeProps {
   events: unknown[];
@@ -106,14 +106,7 @@ export function Claude({
       if (prev.includes(ref)) return prev;
       return prev ? `${prev.trimEnd()} ${ref} ` : `${ref} `;
     });
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) {
-        ta.focus();
-        const end = ta.value.length;
-        ta.setSelectionRange(end, end);
-      }
-    });
+    focusTextareaAt(textareaRef);
   };
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const viewingHistory = !!history?.viewing;
@@ -128,9 +121,10 @@ export function Claude({
 
   const blocks = React.useMemo(
     () => processClaude(events, Date.now()),
-    // Re-run when events change OR when the busy-tick advances so
-    // an ongoing thinking block keeps updating.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // `tick` is intentionally in the deps so an in-flight thinking
+    // block keeps re-deriving its elapsed value via processClaude.
+    // Date.now() is static-call non-reactive — exhaustive-deps is
+    // satisfied without a disable.
     [events, tick],
   );
   // Hide successful hook rows — pending and failed still surface.
@@ -513,236 +507,6 @@ function BlockRow({
   }
 }
 
-function ToolCard({
-  block,
-}: {
-  block: Extract<ClaudeBlock, { kind: 'tool' }>;
-}): React.ReactElement {
-  const cls = block.result?.isError
-    ? 'claude-tool-card claude-tool-error'
-    : 'claude-tool-card';
-  const short = shortenToolName(block.name);
-  const isEdit = short === 'Edit' || short === 'Write' || short === 'MultiEdit';
-  const isBash = short === 'Bash';
-  const inputSummary = summarizeInput(block.name, block.input);
-  const icon = iconForTool(short);
-  return (
-    <div className={cls}>
-      <div className="claude-tool-head">
-        <i className={`codicon codicon-${icon}`} />
-        <span className="claude-tool-name">{short}</span>
-        {!block.result && <span className="claude-tool-pending">⏳</span>}
-      </div>
-      <div className="claude-tool-block claude-tool-in">
-        <span className="claude-tool-label">IN</span>
-        <span className="claude-tool-input">{inputSummary || '(no args)'}</span>
-      </div>
-      <div className="claude-tool-block claude-tool-out">
-        <span className="claude-tool-label">OUT</span>
-        <div className="claude-tool-out-body">
-          <ToolOutputView
-            block={block}
-            isEdit={isEdit}
-            isBash={isBash}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ToolOutputView({
-  block,
-  isEdit,
-  isBash,
-}: {
-  block: Extract<ClaudeBlock, { kind: 'tool' }>;
-  isEdit: boolean;
-  isBash: boolean;
-}): React.ReactElement {
-  if (isEdit) {
-    return <EditDiffView input={block.input} />;
-  }
-  if (!block.result) {
-    return <span className="claude-tool-pending-out">running…</span>;
-  }
-  const { fullText, isError } = block.result;
-  if (!fullText) {
-    return <span className="claude-tool-empty">(empty)</span>;
-  }
-  if (isBash) {
-    return <BashResultView text={fullText} isError={isError} />;
-  }
-  return <ExpandableText text={fullText} isError={isError} />;
-}
-
-
-function HistoryPicker({
-  sessions,
-  viewing,
-  onPick,
-  onClose,
-}: {
-  sessions: SessionMetaLite[];
-  viewing?: string;
-  onPick: (sessionId: string) => void;
-  onClose: () => void;
-}): React.ReactElement {
-  return (
-    <div
-      className="history-picker"
-      role="dialog"
-      aria-label="Past conversations"
-    >
-      <div className="history-picker-head">
-        <span>past conversations</span>
-        <button
-          type="button"
-          className="head-btn"
-          onClick={onClose}
-          aria-label="Close history"
-          title="Close"
-        >
-          <i className="codicon codicon-close" />
-        </button>
-      </div>
-      <div className="history-list">
-        {sessions.length === 0 ? (
-          <div className="muted">no past conversations in this workspace</div>
-        ) : (
-          sessions.map((s) => (
-            <button
-              key={s.sessionId}
-              type="button"
-              className={`history-item ${
-                s.sessionId === viewing ? 'active' : ''
-              }`}
-              onClick={() => onPick(s.sessionId)}
-              title={s.firstPrompt}
-            >
-              <div className="history-item-title">{s.firstPrompt}</div>
-              <div className="history-item-meta">
-                <span>{relativeTime(s.mtimeMs)}</span>
-                <span>·</span>
-                <span>{s.messageCount} msgs</span>
-                <span>·</span>
-                <span className="history-item-sid">
-                  {s.sessionId.slice(0, 8)}
-                </span>
-              </div>
-            </button>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function relativeTime(ms: number): string {
-  const delta = Date.now() - ms;
-  const sec = Math.max(0, Math.floor(delta / 1000));
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-function PermissionBubble({
-  block,
-  onRespond,
-}: {
-  block: Extract<ClaudeBlock, { kind: 'permission' }>;
-  onRespond?: (
-    requestId: string,
-    behavior: 'allow' | 'deny' | 'always-allow',
-  ) => void;
-}): React.ReactElement {
-  const headline =
-    block.title ??
-    `Claude wants to use ${block.toolName}${
-      block.summary ? ` · ${block.summary}` : ''
-    }`;
-  const settled = block.status !== 'pending';
-  const settledLabel =
-    block.status === 'allowed'
-      ? 'allowed'
-      : block.status === 'always-allowed'
-        ? 'always allowed'
-        : block.status === 'denied'
-          ? 'denied'
-          : '';
-  const tsLabel = block.ts
-    ? new Date(block.ts).toTimeString().slice(0, 5)
-    : '';
-  return (
-    <div className={`permission-bubble permission-${block.status}`}>
-      <div className="permission-bubble-head">
-        <i className="codicon codicon-shield" />
-        <span className="permission-bubble-title">{headline}</span>
-        {tsLabel && (
-          <span className="permission-bubble-ts">{tsLabel}</span>
-        )}
-        {settled && (
-          <span className="permission-bubble-state">{settledLabel}</span>
-        )}
-      </div>
-      {block.description && (
-        <div className="permission-bubble-desc">{block.description}</div>
-      )}
-      {block.blockedPath && (
-        <div className="permission-bubble-meta">
-          <span>blocked path:</span>
-          <code>{block.blockedPath}</code>
-        </div>
-      )}
-      {block.decisionReason && (
-        <div className="permission-bubble-meta">
-          <span>reason:</span>
-          <code>{block.decisionReason}</code>
-        </div>
-      )}
-      {block.summary && !block.title && (
-        <div className="permission-bubble-summary">{block.summary}</div>
-      )}
-      {!settled && onRespond && (
-        <div className="permission-bubble-actions">
-          <button
-            type="button"
-            className="permission-btn permission-btn-deny"
-            onClick={() => onRespond(block.requestId, 'deny')}
-          >
-            <i className="codicon codicon-circle-slash" />
-            <span>Deny</span>
-          </button>
-          {block.canAlwaysAllow && (
-            <button
-              type="button"
-              className="permission-btn permission-btn-always"
-              onClick={() => onRespond(block.requestId, 'always-allow')}
-              title="Add an SDK-suggested rule so this tool/input shape doesn't prompt again this session."
-            >
-              <i className="codicon codicon-shield" />
-              <span>Always allow</span>
-            </button>
-          )}
-          <button
-            type="button"
-            className="permission-btn permission-btn-allow"
-            onClick={() => onRespond(block.requestId, 'allow')}
-          >
-            <i className="codicon codicon-check" />
-            <span>Allow</span>
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function PromptText({
   text,
   onOpenFile,
@@ -773,86 +537,3 @@ function PromptText({
   );
 }
 
-/** Pick a VSCode codicon for a given tool name so the tool card head
- *  reads at a glance (file = read/edit/write, terminal = bash, etc.).
- *  Anything unrecognised gets the generic "tools" icon. */
-function iconForTool(short: string): string {
-  switch (short) {
-    case 'Read':
-      return 'file-code';
-    case 'Edit':
-    case 'MultiEdit':
-      return 'edit';
-    case 'Write':
-      return 'new-file';
-    case 'Bash':
-    case 'BashOutput':
-      return 'terminal';
-    case 'Grep':
-      return 'search';
-    case 'Glob':
-      return 'file-submodule';
-    case 'WebFetch':
-    case 'WebSearch':
-      return 'globe';
-    case 'TodoWrite':
-      return 'checklist';
-    case 'Task':
-    case 'Agent':
-      return 'rocket';
-    case 'cc_send':
-    case 'cc_at':
-      return 'comment';
-    case 'cc_drop':
-      return 'cloud-upload';
-    case 'cc_recent':
-    case 'cc_list_files':
-      return 'list-unordered';
-    case 'cc_wait_for_mention':
-      return 'bell';
-    case 'cc_save_summary':
-      return 'note';
-    default:
-      return 'tools';
-  }
-}
-
-function shortenToolName(name: string): string {
-  const m = /^mcp__[^_]+(?:[^_]|_[^_])*?__(.+)$/.exec(name);
-  return m ? m[1] : name;
-}
-
-function shortenHookName(name: string): string {
-  const colon = name.indexOf(':');
-  if (colon < 0) return name;
-  const phase = name.slice(0, colon);
-  const tool = shortenToolName(name.slice(colon + 1));
-  return `${phase} · ${tool}`;
-}
-
-function summarizeInput(name: string, input: Record<string, unknown>): string {
-  const short = shortenToolName(name);
-  const candidates: Record<string, string[]> = {
-    Read: ['file_path', 'path'],
-    Edit: ['file_path', 'path'],
-    Write: ['file_path', 'path'],
-    Bash: ['command'],
-    Grep: ['pattern'],
-    Glob: ['pattern'],
-    cc_send: ['body'],
-    cc_at: ['nick', 'body'],
-    cc_drop: ['path'],
-    cc_recent: ['limit'],
-    cc_save_summary: ['body'],
-    cc_wait_for_mention: ['timeout_seconds'],
-  };
-  const keys = candidates[short] ?? Object.keys(input);
-  const parts: string[] = [];
-  for (const k of keys.slice(0, 2)) {
-    const v = input[k];
-    if (v === undefined) continue;
-    const s = typeof v === 'string' ? v : JSON.stringify(v);
-    parts.push(s.length > 60 ? s.slice(0, 57) + '…' : s);
-  }
-  return parts.join(' · ');
-}

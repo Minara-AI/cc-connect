@@ -114,12 +114,14 @@ function App(): React.ReactElement {
           msg.body && typeof msg.body === 'object'
             ? { ...(msg.body as object), _receivedAt: Date.now() }
             : msg.body;
-        // Always append to the live buffer so "return to live"
-        // restores everything Claude said while we were browsing
-        // history.
-        liveEventsRef.current = [...liveEventsRef.current, stamped];
+        // Mutate the ref-array (O(1) push) instead of cloning. A
+        // long turn can fire 200+ events; the prior `[...prev, x]`
+        // pattern is O(n²) and shows up as jank on busy turns.
+        // Slice when handing to React state to keep the immutable
+        // contract for downstream useMemo keyed on `events`.
+        liveEventsRef.current.push(stamped);
         if (!viewingRef.current) {
-          setClaudeEvents(liveEventsRef.current);
+          setClaudeEvents(liveEventsRef.current.slice());
         }
         if (activeTabRef.current !== 'claude') {
           // Only count assistant-text-bearing events as "unread"; the
@@ -159,16 +161,20 @@ function App(): React.ReactElement {
         setClaudeEvents(b.events);
       }
     };
-    // Drain any messages buffered between script-load and now, then
-    // detach the early-handler so duplicates can't fire.
+    // Order matters here: attach the real listener FIRST, so any
+    // host message that arrives mid-handover lands on it. Then
+    // detach the early-handler. Then drain the buffer atomically
+    // (splice() empties + returns; safe to call repeatedly across
+    // re-mounts). Without this order, a message that arrived
+    // between the handover steps would vanish silently — exactly
+    // the bug the buffer was added to fix.
+    window.addEventListener('message', onMsg);
     if (earlyHandler) {
       window.removeEventListener('message', earlyHandler);
       earlyHandler = null;
     }
-    for (const buffered of earlyMessages) onMsg(buffered);
-    earlyMessages.length = 0;
-
-    window.addEventListener('message', onMsg);
+    const drained = earlyMessages.splice(0);
+    for (const buffered of drained) onMsg(buffered);
     return () => window.removeEventListener('message', onMsg);
   }, []);
 
@@ -185,9 +191,16 @@ function App(): React.ReactElement {
     // Synthesize a local-only event so the prompt renders in the
     // Claude log immediately. SDK events stream back without echoing
     // the user side, and we want chips + scrollback parity.
-    const synthetic = { type: 'cc:user-prompt', body, _receivedAt: Date.now() };
-    liveEventsRef.current = [...liveEventsRef.current, synthetic];
-    setClaudeEvents(liveEventsRef.current);
+    // Field is `text` (not `body`) to avoid colliding with the outer
+    // postMessage envelope's `body` field — different layer, separate
+    // shape.
+    const synthetic = {
+      type: 'cc:user-prompt',
+      text: body,
+      _receivedAt: Date.now(),
+    };
+    liveEventsRef.current.push(synthetic);
+    setClaudeEvents(liveEventsRef.current.slice());
   };
 
   const onOpenFile = (path: string): void => {
@@ -204,7 +217,7 @@ function App(): React.ReactElement {
 
   const onExitHistory = (): void => {
     setViewingSessionId(undefined);
-    setClaudeEvents(liveEventsRef.current);
+    setClaudeEvents(liveEventsRef.current.slice());
   };
 
   const onInterrupt = (): void => {

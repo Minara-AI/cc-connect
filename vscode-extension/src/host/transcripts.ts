@@ -137,7 +137,12 @@ function scanMeta(
 
 /** Strip leading system-context wrappers (`<local-command-caveat>…</…>`,
  *  `<ide_opened_file>…</…>`, `<command-name>…</…>`, `<system-reminder>…
- *  </…>`, etc.) so titles surface what the human actually typed. */
+ *  </…>`, etc.) so titles surface what the human actually typed.
+ *
+ *  ⚠ MUST MIRROR `webview/promptWrappers.ts::stripSystemWrappers`.
+ *  The webview's tsconfig rootDir is `webview/` and the host's is
+ *  `src/`, so neither side can import across the boundary. Edit
+ *  this and the webview file in lockstep. */
 function stripSystemWrappers(raw: string): string {
   let s = raw.trim();
   // Repeatedly strip a leading <tag>…</tag> (or <tag/>) block + any
@@ -153,6 +158,13 @@ function stripSystemWrappers(raw: string): string {
 function readHead(filePath: string, maxLines: number): string[] {
   // Read up to ~64 KB; for typical first-prompt extraction this is
   // plenty without pulling whole multi-MB sessions.
+  //
+  // Edge case: a session whose very first JSONL line is itself > 64 KB
+  // (a giant pasted prompt with no embedded newline) gets truncated
+  // mid-line — `text.split('\n', maxLines)` returns only complete-by-
+  // newline lines, dropping the trailing partial. The session then
+  // shows "(no prompt)" instead of the title. If this becomes
+  // common, lift the cap or stream-read until the first newline.
   const fd = fs.openSync(filePath, 'r');
   try {
     const buf = Buffer.alloc(65_536);
