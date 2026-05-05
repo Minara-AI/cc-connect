@@ -39,11 +39,10 @@ export function Claude({
     textareaRef.current?.focus();
   }, [textareaRef]);
 
-  const busyLabel = state.busy
-    ? state.queued > 0
-      ? `· busy (${state.queued} queued)`
-      : '· busy'
-    : '';
+  const busyLabel = state.busy ? '· busy' : '';
+  const placeholder = state.busy
+    ? 'Queue another message — Claude is working…'
+    : 'Ask Claude — Enter to send · Shift+Enter for newline';
 
   const submit = (): void => {
     const trimmed = draft.trim();
@@ -73,6 +72,11 @@ export function Claude({
           renderWithTurnSeparators(visible)
         )}
       </div>
+      {state.queued > 0 && (
+        <div className="queue-pill">
+          {state.queued} queued · Claude is working on the previous prompt
+        </div>
+      )}
       {onPrompt && (
         <div className="pane-input">
           <textarea
@@ -80,7 +84,7 @@ export function Claude({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Ask Claude — Enter to send · Shift+Enter for newline"
+            placeholder={placeholder}
             rows={1}
           />
           <button

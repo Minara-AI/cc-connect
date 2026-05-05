@@ -248,6 +248,8 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .mention-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; user-select: none; }
     .mention-item:hover { background: var(--vscode-list-hoverBackground); }
     .mention-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    /* Queue depth pill — sits between the Claude log and the input. */
+    .queue-pill { margin: 4px 10px 0; padding: 4px 10px; font-size: 11px; opacity: 0.85; background: var(--vscode-editorWarning-background, rgba(255,200,0,0.10)); border-left: 2px solid var(--vscode-editorWarning-foreground, var(--vscode-textLink-foreground)); border-radius: 0 3px 3px 0; flex: 0 0 auto; }
 
     /* ========== Claude (agent-style) ========== */
     .claude-log { flex: 1; min-height: 0; padding: 4px 10px 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
