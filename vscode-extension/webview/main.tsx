@@ -73,6 +73,10 @@ function App(): React.ReactElement {
     vscode.postMessage({ type: 'chat:send', body });
   };
 
+  const onAttach = (): void => {
+    vscode.postMessage({ type: 'chat:attach' });
+  };
+
   const onPrompt = (body: string): void => {
     vscode.postMessage({ type: 'claude:prompt', body });
   };
@@ -87,7 +91,12 @@ function App(): React.ReactElement {
         {topic ? `${topic.slice(0, 16)}…` : '(no room)'} · me: {myNick} · {status}
       </div>
       <div className="panes">
-        <Chat messages={messages} myNick={myNick} onSend={onSend} />
+        <Chat
+          messages={messages}
+          myNick={myNick}
+          onSend={onSend}
+          onAttach={onAttach}
+        />
         <Claude
           events={claudeEvents}
           state={claudeState}

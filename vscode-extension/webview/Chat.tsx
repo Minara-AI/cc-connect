@@ -13,48 +13,84 @@ interface ChatProps {
   messages: Message[];
   myNick: string;
   onSend?: (body: string) => void;
+  onAttach?: () => void;
 }
+
+interface SlashCommand {
+  cmd: string;
+  label: string;
+  template: string;
+}
+
+const SLASH_COMMANDS: readonly SlashCommand[] = [
+  { cmd: '/drop', label: 'Share a file with the Room', template: '/drop ' },
+  { cmd: '/at', label: 'At-mention a peer', template: '/at ' },
+];
 
 export function Chat({
   messages,
   myNick,
   onSend,
+  onAttach,
 }: ChatProps): React.ReactElement {
   const [draft, setDraft] = React.useState('');
-  const [popupOpen, setPopupOpen] = React.useState(false);
-  const [popupCandidates, setPopupCandidates] = React.useState<string[]>([]);
-  const [popupIndex, setPopupIndex] = React.useState(0);
+
+  // Mention popup state.
+  const [mentionOpen, setMentionOpen] = React.useState(false);
+  const [mentionCands, setMentionCands] = React.useState<string[]>([]);
+  const [mentionIndex, setMentionIndex] = React.useState(0);
+
+  // Slash-command popup state.
+  const [slashOpen, setSlashOpen] = React.useState(false);
+  const [slashCands, setSlashCands] = React.useState<SlashCommand[]>([]);
+  const [slashIndex, setSlashIndex] = React.useState(0);
 
   const scrollRef = useStickyScroll(messages.length);
   const textareaRef = useAutosize(draft);
 
-  // Auto-focus the chat input on mount.
   React.useEffect(() => {
     textareaRef.current?.focus();
   }, [textareaRef]);
 
-  // Recent nicks for @-mention autocomplete: most-recent-first,
-  // unique, excluding self and own AI mirror.
   const recentNicks = React.useMemo(
     () => deriveRecentNicks(messages, myNick, 50),
     [messages, myNick],
   );
 
-  const updatePopup = (text: string, cursor: number): void => {
+  const updatePopups = (text: string, cursor: number): void => {
+    // Slash takes priority — only triggers when the message starts
+    // with `/` and the cursor is within the command name (no space
+    // yet). After the user adds the first arg, the popup hides.
     const upToCursor = text.slice(0, cursor);
+    if (text.startsWith('/') && !upToCursor.includes(' ')) {
+      const prefix = upToCursor.toLowerCase();
+      const cands = SLASH_COMMANDS.filter((c) =>
+        c.cmd.startsWith(prefix),
+      );
+      if (cands.length > 0) {
+        setSlashCands(cands);
+        setSlashIndex(0);
+        setSlashOpen(true);
+        setMentionOpen(false);
+        return;
+      }
+    }
+    setSlashOpen(false);
+
+    // @-mention popup.
     const tok = currentAtToken(upToCursor);
     if (tok === null) {
-      setPopupOpen(false);
+      setMentionOpen(false);
       return;
     }
     const cands = mentionCandidates(recentNicks, tok, myNick);
     if (cands.length === 0) {
-      setPopupOpen(false);
+      setMentionOpen(false);
       return;
     }
-    setPopupCandidates(cands);
-    setPopupIndex(0);
-    setPopupOpen(true);
+    setMentionCands(cands);
+    setMentionIndex(0);
+    setMentionOpen(true);
   };
 
   const submit = (): void => {
@@ -62,42 +98,93 @@ export function Chat({
     if (!trimmed || !onSend) return;
     onSend(trimmed);
     setDraft('');
-    setPopupOpen(false);
+    setMentionOpen(false);
+    setSlashOpen(false);
   };
 
-  const accept = (full: string): void => {
+  const acceptMention = (full: string): void => {
     const next = completeAt(draft, full);
     setDraft(next);
-    setPopupOpen(false);
-    // Restore cursor to end on the next paint.
+    setMentionOpen(false);
     requestAnimationFrame(() => {
       const ta = textareaRef.current;
       if (ta) ta.setSelectionRange(next.length, next.length);
     });
   };
 
+  const acceptSlash = (template: string): void => {
+    setDraft(template);
+    setSlashOpen(false);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(template.length, template.length);
+      }
+    });
+  };
+
+  const openSlashPicker = (): void => {
+    setDraft('/');
+    setSlashCands(SLASH_COMMANDS.slice());
+    setSlashIndex(0);
+    setSlashOpen(true);
+    setMentionOpen(false);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(1, 1);
+      }
+    });
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (popupOpen) {
+    if (slashOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setPopupIndex((i) => (i + 1) % popupCandidates.length);
+        setSlashIndex((i) => (i + 1) % slashCands.length);
         return;
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setPopupIndex(
-          (i) => (i - 1 + popupCandidates.length) % popupCandidates.length,
+        setSlashIndex(
+          (i) => (i - 1 + slashCands.length) % slashCands.length,
         );
         return;
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
-        accept(popupCandidates[popupIndex]);
+        acceptSlash(slashCands[slashIndex].template);
         return;
       }
       if (e.key === 'Escape') {
         e.preventDefault();
-        setPopupOpen(false);
+        setSlashOpen(false);
+        return;
+      }
+    }
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((i) => (i + 1) % mentionCands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex(
+          (i) => (i - 1 + mentionCands.length) % mentionCands.length,
+        );
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        acceptMention(mentionCands[mentionIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentionOpen(false);
         return;
       }
     }
@@ -110,7 +197,7 @@ export function Chat({
   const onChange = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
     const next = e.target.value;
     setDraft(next);
-    updatePopup(next, e.target.selectionStart);
+    updatePopups(next, e.target.selectionStart);
   };
 
   const empty = draft.trim().length === 0;
@@ -129,19 +216,46 @@ export function Chat({
       </div>
       {onSend && (
         <div className="pane-input">
-          {popupOpen && (
+          {mentionOpen && (
             <MentionPopup
-              candidates={popupCandidates}
-              selected={popupIndex}
-              onPick={(i) => accept(popupCandidates[i])}
+              candidates={mentionCands}
+              selected={mentionIndex}
+              onPick={(i) => acceptMention(mentionCands[i])}
             />
           )}
+          {slashOpen && (
+            <SlashPopup
+              candidates={slashCands}
+              selected={slashIndex}
+              onPick={(i) => acceptSlash(slashCands[i].template)}
+            />
+          )}
+          {onAttach && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={onAttach}
+              aria-label="Attach file"
+              title="Attach a file"
+            >
+              <PlusIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={openSlashPicker}
+            aria-label="Slash commands"
+            title="Slash commands"
+          >
+            <SlashIcon />
+          </button>
           <textarea
             ref={textareaRef}
             value={draft}
             onChange={onChange}
             onKeyDown={onKeyDown}
-            placeholder="Message — Enter to send · Shift+Enter for newline · /drop <path> · @ to mention"
+            placeholder="Message — Enter to send · Shift+Enter for newline · @ to mention"
             rows={1}
           />
           <button
@@ -176,7 +290,6 @@ function MentionPopup({
           key={c}
           className={`mention-item ${i === selected ? 'selected' : ''}`}
           onMouseDown={(e) => {
-            // mousedown not click, so the textarea doesn't blur first.
             e.preventDefault();
             onPick(i);
           }}
@@ -184,6 +297,36 @@ function MentionPopup({
           aria-selected={i === selected}
         >
           @{c}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SlashPopup({
+  candidates,
+  selected,
+  onPick,
+}: {
+  candidates: SlashCommand[];
+  selected: number;
+  onPick: (i: number) => void;
+}): React.ReactElement {
+  return (
+    <div className="mention-popup slash-popup" role="listbox">
+      {candidates.map((c, i) => (
+        <div
+          key={c.cmd}
+          className={`mention-item ${i === selected ? 'selected' : ''}`}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onPick(i);
+          }}
+          role="option"
+          aria-selected={i === selected}
+        >
+          <span className="slash-cmd">{c.cmd}</span>
+          <span className="slash-label">{c.label}</span>
         </div>
       ))}
     </div>
@@ -233,6 +376,34 @@ function SendIcon(): React.ReactElement {
       aria-hidden="true"
     >
       <path d="M1.7 1.4a.6.6 0 0 1 .7-.05l11.7 6a.6.6 0 0 1 0 1.06l-11.7 6.1a.6.6 0 0 1-.86-.7l1.5-4.95a.6.6 0 0 1 .47-.42l5.34-.93a.2.2 0 0 0 0-.4l-5.34-.93a.6.6 0 0 1-.47-.42l-1.5-4.95a.6.6 0 0 1 .16-.6z" />
+    </svg>
+  );
+}
+
+function PlusIcon(): React.ReactElement {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M8 2.5a.7.7 0 0 1 .7.7V7.3h4.1a.7.7 0 1 1 0 1.4H8.7v4.1a.7.7 0 1 1-1.4 0V8.7H3.2a.7.7 0 1 1 0-1.4h4.1V3.2A.7.7 0 0 1 8 2.5z" />
+    </svg>
+  );
+}
+
+function SlashIcon(): React.ReactElement {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M10.6 2.4a.7.7 0 0 1 .43.85l-3.6 10.4a.7.7 0 0 1-1.32-.45l3.6-10.4a.7.7 0 0 1 .89-.4z" />
     </svg>
   );
 }
