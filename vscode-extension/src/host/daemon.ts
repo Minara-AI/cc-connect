@@ -61,6 +61,28 @@ export async function startHostBg(): Promise<string> {
   return match[0];
 }
 
+/** Spawn `cc-connect host-bg stop <topic-prefix>`. Idempotent — if no
+ *  daemon owns that topic, the CLI exits cleanly (printing nothing
+ *  meaningful that we'd surface). */
+export async function stopHostBg(topicPrefix: string): Promise<void> {
+  const r = await run(['host-bg', 'stop', topicPrefix]);
+  if (r.code !== 0) {
+    throw new Error(
+      `host-bg stop exited ${r.code}: ${(r.stderr || r.stdout).trim()}`,
+    );
+  }
+}
+
+/** Spawn `cc-connect chat-daemon stop <topic-prefix>`. Idempotent.  */
+export async function stopChatDaemon(topicPrefix: string): Promise<void> {
+  const r = await run(['chat-daemon', 'stop', topicPrefix]);
+  if (r.code !== 0) {
+    throw new Error(
+      `chat-daemon stop exited ${r.code}: ${(r.stderr || r.stdout).trim()}`,
+    );
+  }
+}
+
 /** Spawn `cc-connect chat-daemon start <ticket>` and return the bound
  *  topic hex. Idempotent: if a daemon already owns the topic, the CLI
  *  prints `ALREADY <topic> <pid>` and exits 0; otherwise prints

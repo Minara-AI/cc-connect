@@ -21,7 +21,8 @@
     "onCommand:cc-connect.openRoom",
     "onCommand:cc-connect.startRoom",
     "onCommand:cc-connect.joinRoom",
-    "onCommand:cc-connect.showTicket"
+    "onCommand:cc-connect.showTicket",
+    "onCommand:cc-connect.stopRoom"
   ],
   "contributes": {
     "commands": [
@@ -48,6 +49,11 @@
       {
         "command": "cc-connect.showTicket",
         "title": "Show Ticket…",
+        "category": "cc-connect"
+      },
+      {
+        "command": "cc-connect.stopRoom",
+        "title": "Stop Room…",
         "category": "cc-connect"
       }
     ]

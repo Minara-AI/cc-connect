@@ -3,7 +3,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { createClaudeRunner } from './host/claude_runner';
-import { startChatDaemon, startHostBg } from './host/daemon';
+import {
+  startChatDaemon,
+  startHostBg,
+  stopChatDaemon,
+  stopHostBg,
+} from './host/daemon';
 import { ccDrop, ccSend } from './host/ipc';
 import { tailLog, type LogTailHandle } from './host/log_tail';
 import { shouldWakeClaude } from './host/mention';
@@ -25,6 +30,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('cc-connect.showTicket', () => {
       void showTicket();
+    }),
+    vscode.commands.registerCommand('cc-connect.stopRoom', () => {
+      void stopRoom();
     }),
   );
 }
@@ -229,6 +237,51 @@ async function pickTopic(): Promise<string | undefined> {
     matchOnDescription: true,
   });
   return picked?.topic;
+}
+
+async function stopRoom(): Promise<void> {
+  const topic = await pickTopic();
+  if (!topic) return;
+  const confirm = await vscode.window.showWarningMessage(
+    `Stop daemons for ${topic.slice(0, 12)}…? Peers will lose connection.`,
+    { modal: true },
+    'Stop',
+  );
+  if (confirm !== 'Stop') return;
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `cc-connect: stopping ${topic.slice(0, 12)}…`,
+        cancellable: false,
+      },
+      async () => {
+        // Stop chat-daemon first (closes chat.sock for clients), then
+        // host-bg (drops the gossip subscription). Order is best-effort
+        // — if either errors we still try the other.
+        const errs: string[] = [];
+        try {
+          await stopChatDaemon(topic);
+        } catch (e) {
+          errs.push(`chat-daemon: ${(e as Error).message}`);
+        }
+        try {
+          await stopHostBg(topic);
+        } catch (e) {
+          errs.push(`host-bg: ${(e as Error).message}`);
+        }
+        if (errs.length > 0) throw new Error(errs.join('; '));
+      },
+    );
+  } catch (e) {
+    void vscode.window.showErrorMessage(
+      `cc-connect: stop failed — ${(e as Error).message}`,
+    );
+    return;
+  }
+  void vscode.window.showInformationMessage(
+    `cc-connect: ${topic.slice(0, 12)}… stopped.`,
+  );
 }
 
 async function showTicket(): Promise<void> {
