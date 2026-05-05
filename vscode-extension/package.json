@@ -136,7 +136,7 @@
   },
   "scripts": {
     "compile": "bun run compile:host && bun run compile:webview",
-    "compile:host": "tsc -p .",
+    "compile:host": "tsc -p . && mkdir -p dist/layouts && cp ../layouts/bootstrap-prompt.md ../layouts/auto-reply-prompt.md dist/layouts/",
     "compile:webview": "bun build ./webview/main.tsx --outdir ./dist/webview --format esm --target browser --jsx-factory React.createElement --jsx-fragment React.Fragment --sourcemap=external && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/",
     "watch": "tsc -p . --watch",
     "vscode:prepublish": "bun run compile",

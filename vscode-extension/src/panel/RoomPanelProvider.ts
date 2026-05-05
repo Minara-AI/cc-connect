@@ -18,6 +18,12 @@ import {
 import { ccDrop, ccSend } from '../host/ipc';
 import { tailLog, type LogTailHandle } from '../host/log_tail';
 import { shouldWakeClaude } from '../host/mention';
+import { loadLauncherPrompts } from '../host/prompts';
+import {
+  listSessions,
+  loadSession,
+  type SessionMeta,
+} from '../host/transcripts';
 import type { Message } from '../types';
 
 export class RoomPanelProvider implements vscode.WebviewViewProvider {
@@ -29,6 +35,7 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
   private tail?: LogTailHandle;
   private runner?: ClaudeRunnerHandle;
   private messageDisposable?: vscode.Disposable;
+  private editorDisposable?: vscode.Disposable;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -67,10 +74,33 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
   private tearDown(): void {
     this.messageDisposable?.dispose();
     this.messageDisposable = undefined;
+    this.editorDisposable?.dispose();
+    this.editorDisposable = undefined;
     this.tail?.close();
     this.tail = undefined;
     this.runner?.abort();
     this.runner = undefined;
+  }
+
+  /** Push the current active editor (if any) to the webview so the
+   *  Claude input can show a "ref this file" chip. Called on Room
+   *  activation + every editor switch. */
+  private pushActiveEditor(view: vscode.WebviewView): void {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== 'file') {
+      view.webview.postMessage({ type: 'editor:active', body: null });
+      return;
+    }
+    const fsPath = ed.document.uri.fsPath;
+    const basename = path.basename(fsPath);
+    // Prefer a workspace-relative path so the chip stays compact and
+    // peer-meaningful — `webview/Claude.tsx` reads better than
+    // `/Users/.../webview/Claude.tsx`.
+    const relPath = vscode.workspace.asRelativePath(fsPath, false);
+    view.webview.postMessage({
+      type: 'editor:active',
+      body: { path: relPath, fsPath, basename },
+    });
   }
 
   private activateRoom(topic: string): void {
@@ -116,6 +146,66 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
           // Mint a fresh sessionId; the webview clears its local
           // state in parallel via `room:claude-cleared`.
           this.runner?.resetSession();
+        } else if (msg.type === 'claude:permission-mode') {
+          const mode = msg.body;
+          if (
+            mode === 'bypassPermissions' ||
+            mode === 'acceptEdits' ||
+            mode === 'plan'
+          ) {
+            this.runner?.setPermissionMode(mode);
+          }
+        } else if (msg.type === 'history:list') {
+          // List Claude transcripts for the current workspace cwd.
+          // No room filter — Claude transcripts predate cc-connect's
+          // Room concept, and we want users to see everything they've
+          // run in this folder.
+          const cwd = workspaceCwd();
+          const sessions: SessionMeta[] = cwd ? listSessions(cwd) : [];
+          view.webview.postMessage({
+            type: 'history:list-result',
+            body: sessions.map((s) => ({
+              sessionId: s.sessionId,
+              firstPrompt: s.firstPrompt,
+              mtimeMs: s.mtimeMs,
+              messageCount: s.messageCount,
+            })),
+          });
+        } else if (msg.type === 'history:load') {
+          const sid = typeof msg.body === 'string' ? msg.body : '';
+          const cwd = workspaceCwd();
+          if (!sid || !cwd) return;
+          try {
+            const events = loadSession(cwd, sid);
+            view.webview.postMessage({
+              type: 'history:loaded',
+              body: { sessionId: sid, events },
+            });
+          } catch (e) {
+            view.webview.postMessage({
+              type: 'history:loaded',
+              body: {
+                sessionId: sid,
+                events: [],
+                error: e instanceof Error ? e.message : String(e),
+              },
+            });
+          }
+        } else if (msg.type === 'prompt:open-file') {
+          // File-ref chip clicked in the Claude prompt log. Resolve
+          // relative paths against the workspace root, expand `~`,
+          // then open in the editor. Failures fall through silently
+          // — chips are heuristic and may catch non-paths.
+          const raw = typeof msg.body === 'string' ? msg.body.trim() : '';
+          if (!raw) return;
+          const resolved = resolveFileRef(raw);
+          if (!resolved) return;
+          try {
+            const doc = await vscode.workspace.openTextDocument(resolved);
+            await vscode.window.showTextDocument(doc, { preview: true });
+          } catch {
+            // Not a real file, or no permission — silent.
+          }
         } else if (msg.type === 'chat:attach') {
           // Open VSCode's native file picker, then drop whatever the
           // user selects into the Room. Cancellation = silent no-op.
@@ -145,8 +235,18 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
       body: { topic, myNick: this.myNick },
     });
 
+    const launcherPrompts = loadLauncherPrompts(
+      this.context.extensionUri.fsPath,
+    );
     this.runner = createClaudeRunner({
       topic,
+      // Same prompt pair the TUI feeds claude via `claude-wrap.sh`:
+      // - autoReply → `--append-system-prompt` (Claude learns it's
+      //   in a cc-connect Room, learns the cc_* MCP tools)
+      // - bootstrap → first user prompt (Claude greets + enters the
+      //   `cc_wait_for_mention` listener loop)
+      systemPromptAppend: launcherPrompts.autoReply,
+      initialPrompt: launcherPrompts.bootstrap,
       onEvent: (event) =>
         view.webview.postMessage({ type: 'claude:event', body: event }),
       onStateChange: (state) =>
@@ -172,6 +272,13 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
       );
     }
 
+    // Active-editor tracking: seed once + watch for switches. The
+    // webview shows a "ref this file" chip in the Claude input.
+    this.pushActiveEditor(view);
+    this.editorDisposable = vscode.window.onDidChangeActiveTextEditor(() =>
+      this.pushActiveEditor(view),
+    );
+
     view.webview.postMessage({ type: 'host:ready' });
   }
 }
@@ -186,6 +293,29 @@ function readMyNick(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function workspaceCwd(): string | undefined {
+  // Use the first workspace folder as the project root for Claude
+  // transcripts. Multi-root workspaces fall back to the first folder
+  // — Claude itself uses the cwd `claude` was invoked in.
+  const folders = vscode.workspace.workspaceFolders;
+  return folders?.[0]?.uri.fsPath;
+}
+
+function resolveFileRef(raw: string): vscode.Uri | undefined {
+  let p = raw;
+  if (p.startsWith('~/')) p = path.join(os.homedir(), p.slice(2));
+  if (path.isAbsolute(p)) {
+    return fs.existsSync(p) ? vscode.Uri.file(p) : undefined;
+  }
+  // Relative — try every workspace folder root.
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  for (const f of folders) {
+    const abs = path.join(f.uri.fsPath, p);
+    if (fs.existsSync(abs)) return vscode.Uri.file(abs);
+  }
+  return undefined;
 }
 
 function idleHtml(webview: vscode.Webview): string {
@@ -260,33 +390,72 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .pane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
     .pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px; font-size: 10.5px; opacity: 0.6; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto; border-bottom: 1px solid var(--vscode-panel-border); }
     .pane-head > span:first-child { flex: 1; }
+    .pane-head-actions { display: flex; gap: 2px; align-items: center; }
     .head-btn { padding: 3px 6px; background: transparent; color: var(--vscode-foreground); opacity: 0.6; border: none; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s, background 0.12s; }
     .head-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.15)); }
+    .head-btn.active { opacity: 1; background: var(--vscode-toolbar-activeBackground, rgba(95,168,211,0.2)); color: var(--vscode-charts-blue, #5fa8d3); }
     .head-btn .codicon { font-size: 14px; }
     .pane-busy { opacity: 0.7; font-weight: 400; font-size: 10px; text-transform: none; letter-spacing: 0; }
+
+    /* History picker overlay + viewing banner */
+    .history-picker { display: flex; flex-direction: column; max-height: 320px; flex: 0 0 auto; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border); }
+    .history-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; font-size: 10.5px; opacity: 0.55; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--vscode-panel-border); }
+    .history-list { overflow-y: auto; padding: 2px 0; }
+    .history-list .muted { padding: 12px 10px; font-size: 11.5px; opacity: 0.5; font-style: italic; text-align: center; }
+    .history-item { display: block; width: 100%; text-align: left; padding: 6px 10px; background: transparent; border: none; border-bottom: 1px solid rgba(127,127,127,0.10); color: var(--vscode-foreground); cursor: pointer; font: inherit; transition: background 0.1s; }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { background: var(--vscode-list-hoverBackground, rgba(127,127,127,0.08)); }
+    .history-item.active { background: var(--vscode-list-activeSelectionBackground, rgba(95,168,211,0.18)); }
+    .history-item-title { font-size: 12px; line-height: 1.4; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 2px; }
+    .history-item-meta { display: flex; gap: 5px; font-size: 10.5px; opacity: 0.5; }
+    .history-item-sid { font-family: var(--vscode-editor-font-family, monospace); }
+    .history-banner { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: rgba(95,168,211,0.10); border-bottom: 1px solid rgba(95,168,211,0.32); font-size: 11.5px; color: var(--vscode-charts-blue, #5fa8d3); flex: 0 0 auto; }
+    .history-banner .codicon { font-size: 13px; opacity: 0.75; }
+    .history-banner-exit { margin-left: auto; padding: 1px 8px; background: transparent; color: var(--vscode-charts-blue, #5fa8d3); border: 1px solid rgba(95,168,211,0.5); border-radius: 3px; font-size: 11px; cursor: pointer; }
+    .history-banner-exit:hover { background: rgba(95,168,211,0.18); }
     .muted { font-size: 12px; opacity: 0.55; padding: 8px 10px; }
     .muted-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px 10px; opacity: 0.4; font-size: 11px; flex: 1; }
     .muted-empty .codicon { font-size: 28px; opacity: 0.5; }
 
-    /* ========== Chat (compact terminal-style rows) ========== */
+    /* ========== Chat (own messages right-aligned, peers left) ========== */
     .chat-log { flex: 1; min-height: 0; padding: 6px 10px 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
     .chat-row { display: flex; gap: 8px; align-items: flex-start; animation: cc-fade-in 0.18s ease-out; }
+    .chat-row.me { flex-direction: row-reverse; }
     .chat-row.continuation { gap: 8px; margin-top: -6px; }
     .chat-avatar { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; color: var(--vscode-editor-background); user-select: none; line-height: 1; }
     .chat-avatar-spacer { flex: 0 0 22px; }
-    .chat-body { flex: 1; min-width: 0; }
+    .chat-body { flex: 1 1 auto; min-width: 0; max-width: calc(100% - 30px); }
+    .chat-row.me .chat-body { display: flex; flex-direction: column; align-items: flex-end; }
     .chat-byline { display: flex; align-items: baseline; gap: 8px; font-size: 11px; line-height: 1.2; }
+    .chat-row.me .chat-byline { flex-direction: row-reverse; }
     .chat-nick { font-weight: 600; color: var(--vscode-foreground); }
     .chat-row.me .chat-nick { color: var(--vscode-textLink-foreground); }
     .chat-ts { font-size: 10px; opacity: 0.4; font-family: var(--vscode-editor-font-family, monospace); font-variant-numeric: tabular-nums; }
-    .chat-text { font-size: 12.5px; line-height: 1.5; word-wrap: break-word; overflow-wrap: anywhere; padding-top: 1px; }
+    .chat-text { font-size: 12.5px; line-height: 1.5; word-wrap: break-word; overflow-wrap: anywhere; padding-top: 1px; max-width: 100%; }
+    .chat-row.me .chat-text { background: var(--vscode-charts-blue, rgba(95,168,211,0.18)); color: var(--vscode-foreground); padding: 4px 10px; border-radius: 12px 12px 4px 12px; background: rgba(95,168,211,0.18); display: inline-block; max-width: 100%; }
+    .chat-row.peer .chat-text { background: rgba(127,127,127,0.10); padding: 4px 10px; border-radius: 12px 12px 12px 4px; display: inline-block; max-width: 100%; }
+    .chat-row.continuation .chat-text { border-top-left-radius: 4px; border-top-right-radius: 4px; }
     .mention { font-weight: 500; color: var(--vscode-textLink-foreground); }
     .mention.me { background: var(--vscode-editor-selectionHighlightBackground, rgba(255,200,0,0.22)); padding: 0 3px; border-radius: 3px; font-weight: 600; }
     .mention.broadcast { font-style: italic; }
     @keyframes cc-fade-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 
     /* Both panes' inputs share styling */
+    .pane-input-ref { display: flex; align-items: center; gap: 6px; padding: 4px 10px 0; flex: 0 0 auto; }
+    .editor-ref-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border: 1px solid var(--vscode-button-border, transparent); font-size: 11px; cursor: pointer; line-height: 1.6; font-family: var(--vscode-editor-font-family, monospace); }
+    .editor-ref-chip:hover { background: var(--vscode-list-activeSelectionBackground, var(--vscode-button-hoverBackground)); }
+    .editor-ref-chip .codicon { font-size: 11px; opacity: 0.85; }
+    .editor-ref-hint { font-size: 10.5px; opacity: 0.45; }
     .pane-input { position: relative; padding: 6px 10px 8px; flex: 0 0 auto; border-top: 1px solid var(--vscode-panel-border); display: flex; align-items: flex-end; gap: 6px; }
+    .mode-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 12px; font-size: 11px; line-height: 1; cursor: pointer; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.18)); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); transition: background 0.12s, border-color 0.12s; align-self: center; }
+    .mode-pill:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.28)); }
+    .mode-pill .codicon { font-size: 11px; }
+    .mode-pill.mode-bypassPermissions { background: rgba(95,168,211,0.18); color: var(--vscode-charts-blue, #5fa8d3); border-color: rgba(95,168,211,0.4); }
+    .mode-pill.mode-bypassPermissions:hover { background: rgba(95,168,211,0.30); }
+    .mode-pill.mode-acceptEdits { background: rgba(214,168,83,0.18); color: var(--vscode-charts-yellow, #d6a853); border-color: rgba(214,168,83,0.4); }
+    .mode-pill.mode-acceptEdits:hover { background: rgba(214,168,83,0.30); }
+    .mode-pill.mode-plan { background: rgba(110,192,123,0.18); color: var(--vscode-charts-green, #6ec07b); border-color: rgba(110,192,123,0.4); }
+    .mode-pill.mode-plan:hover { background: rgba(110,192,123,0.30); }
     .pane-input textarea { flex: 1; min-width: 0; box-sizing: border-box; resize: none; min-height: 32px; max-height: 140px; padding: 7px 12px; font: inherit; font-size: 12.5px; line-height: 1.45; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 16px; outline: none; overflow-y: auto; }
     .pane-input textarea:focus { border-color: var(--vscode-focusBorder); }
     .send-btn { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border-radius: 50%; background: var(--vscode-textLink-foreground); color: var(--vscode-editor-background); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s; }
@@ -311,17 +480,28 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .queue-pill { margin: 4px 10px 0; padding: 4px 10px; font-size: 11px; opacity: 0.85; background: var(--vscode-editorWarning-background, rgba(255,200,0,0.10)); border-left: 2px solid var(--vscode-editorWarning-foreground, var(--vscode-textLink-foreground)); border-radius: 0 3px 3px 0; flex: 0 0 auto; }
 
     /* ========== Claude (agent-style) ========== */
-    .claude-log { flex: 1; min-height: 0; padding: 6px 10px 6px 28px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; position: relative; }
+    .claude-log { flex: 1; min-height: 0; padding: 6px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; position: relative; }
+    .claude-flat { /* plain text, prompts, results — no timeline bullet */ }
     /* Vertical timeline connector */
-    .claude-log::before { content: ''; position: absolute; left: 13px; top: 10px; bottom: 10px; width: 1px; background: var(--vscode-panel-border); }
+    /* Removed the full-height vertical line — only step blocks (tool /
+       thinking / hook) carry a bullet now. Plain text + prompts read
+       like a normal chat instead of a process trace. */
     /* Step wrapper — each block gets a bullet on the timeline */
-    .claude-step { position: relative; }
-    .claude-step::before { content: ''; position: absolute; left: -18px; top: 7px; width: 8px; height: 8px; border-radius: 50%; background: var(--vscode-foreground); opacity: 0.4; z-index: 1; }
+    .claude-step { position: relative; padding-left: 18px; }
+    .claude-step::before { content: ''; position: absolute; left: 4px; top: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-foreground); opacity: 0.4; z-index: 1; }
     .claude-step.ok::before { background: var(--vscode-charts-green, #6ec07b); opacity: 0.85; }
     .claude-step.done::before { background: var(--vscode-charts-green, #6ec07b); opacity: 0.55; }
     .claude-step.pending::before { background: var(--vscode-disabledForeground, #888); opacity: 0.6; animation: cc-pulse 1.4s ease-in-out infinite; }
     .claude-step.error::before { background: var(--vscode-errorForeground); opacity: 0.95; }
+    .claude-step.me::before { background: var(--vscode-charts-blue, #5fa8d3); opacity: 0.9; }
     .claude-row { word-wrap: break-word; }
+    .claude-prompt { display: flex; gap: 6px; align-items: flex-start; padding: 4px 0; font-size: 12.5px; line-height: 1.55; }
+    .claude-prompt-arrow { color: var(--vscode-charts-blue, #5fa8d3); font-weight: 700; opacity: 0.85; flex: 0 0 auto; }
+    .claude-prompt-body { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+    .file-chip { display: inline-flex; align-items: center; gap: 3px; vertical-align: baseline; margin: 0 2px; padding: 0 6px 0 4px; border-radius: 10px; background: rgba(95,168,211,0.14); color: var(--vscode-textLink-foreground); border: 1px solid rgba(95,168,211,0.32); font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); cursor: pointer; line-height: 1.5; }
+    .file-chip:hover { background: rgba(95,168,211,0.26); border-color: rgba(95,168,211,0.5); }
+    .file-chip .codicon { font-size: 11px; opacity: 0.75; }
+    .file-chip-name { white-space: nowrap; }
     .claude-system { opacity: 0.45; font-size: 11px; padding: 4px 0; }
     .claude-thinking { font-size: 11px; opacity: 0.55; font-style: italic; padding: 4px 0 6px; }
     .claude-thinking.ongoing { animation: cc-pulse 1.4s ease-in-out infinite; }
@@ -334,23 +514,31 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .claude-turn-sep { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 10px; opacity: 0.45; text-transform: uppercase; letter-spacing: 0.06em; }
     .claude-turn-sep::before, .claude-turn-sep::after { content: ''; flex: 1; height: 1px; background: var(--vscode-panel-border); }
 
-    /* Tool cards */
-    .claude-tool-card { margin: 4px 0; padding: 8px 10px; border-left: 2px solid var(--vscode-textLink-foreground); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.08)); border-radius: 0 4px 4px 0; }
-    .claude-tool-card.claude-tool-error { border-left-color: var(--vscode-errorForeground); }
-    .claude-tool-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
-    .claude-tool-name { font-weight: 600; color: var(--vscode-textLink-foreground); }
-    .claude-tool-input { opacity: 0.85; word-break: break-all; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; }
-    .claude-tool-pending { opacity: 0.5; margin-left: auto; }
-    .claude-tool-empty { margin-top: 4px; opacity: 0.45; font-style: italic; font-size: 11px; }
-    .tool-body { margin-top: 6px; }
-    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; padding: 6px 8px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.10)); border-radius: 3px; overflow-x: auto; max-height: 200px; overflow-y: auto; white-space: pre; margin: 0; }
-    .tool-body.tool-body-error .tool-body-pre { background: var(--vscode-inputValidation-errorBackground, rgba(255,80,80,0.10)); border: 1px solid var(--vscode-errorForeground, rgba(255,80,80,0.5)); }
-    .tool-expand { margin-top: 4px; padding: 1px 8px; font-size: 11px; opacity: 0.7; background: transparent; color: var(--vscode-textLink-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 2px; cursor: pointer; }
-    .tool-expand:hover { opacity: 1; }
-    .diff { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; }
-    .diff-old, .diff-new { margin: 0; padding: 4px 8px; border-radius: 3px; overflow-x: auto; max-height: 180px; overflow-y: auto; white-space: pre; }
-    .diff-old { background: var(--vscode-diffEditor-removedTextBackground, rgba(255,80,80,0.12)); border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground, #d04444); }
-    .diff-new { background: var(--vscode-diffEditor-insertedTextBackground, rgba(80,200,80,0.12)); border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground, #44d044); }
+    /* Tool cards — VSCode-native styling, IN/OUT split */
+    .claude-tool-card { margin: 2px 0; padding: 0; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); border-radius: 4px; overflow: hidden; font-size: 11.5px; }
+    .claude-tool-card.claude-tool-error { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }
+    .claude-tool-head { display: flex; gap: 6px; align-items: center; padding: 3px 8px; font-size: 11.5px; background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-titleBar-inactiveBackground, transparent)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
+    .claude-tool-head .codicon { font-size: 12px; opacity: 0.7; }
+    .claude-tool-name { font-weight: 600; color: var(--vscode-foreground); letter-spacing: 0; }
+    .claude-tool-pending { opacity: 0.5; margin-left: auto; font-size: 11px; }
+    .claude-tool-block { display: flex; gap: 6px; align-items: flex-start; padding: 3px 8px; }
+    .claude-tool-block + .claude-tool-block { border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
+    .claude-tool-out { background: var(--vscode-textBlockQuote-background, transparent); }
+    .claude-tool-label { flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: 0.6px; padding: 1px 4px; border-radius: 2px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); margin-top: 2px; opacity: 0.7; }
+    .claude-tool-error .claude-tool-out .claude-tool-label { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); opacity: 1; }
+    .claude-tool-input { opacity: 0.95; word-break: break-all; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; flex: 1 1 auto; min-width: 0; padding-top: 1px; color: var(--vscode-descriptionForeground); }
+    .claude-tool-out-body { flex: 1 1 auto; min-width: 0; }
+    .claude-tool-pending-out { opacity: 0.55; font-style: italic; font-size: 11px; }
+    .claude-tool-empty { opacity: 0.45; font-style: italic; font-size: 11px; }
+    .tool-body { margin: 0; }
+    .tool-body-pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; padding: 4px 6px; background: var(--vscode-textCodeBlock-background); border-radius: 2px; overflow-x: auto; max-height: 200px; overflow-y: auto; white-space: pre; margin: 0; color: var(--vscode-editor-foreground); }
+    .tool-body.tool-body-error .tool-body-pre { background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); color: var(--vscode-errorForeground); }
+    .tool-expand { margin-top: 4px; padding: 1px 8px; font-size: 11px; background: transparent; color: var(--vscode-textLink-foreground); border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; }
+    .tool-expand:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .diff { margin: 0; display: flex; flex-direction: column; gap: 2px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.45; }
+    .diff-old, .diff-new { margin: 0; padding: 3px 6px; border-radius: 2px; overflow-x: auto; max-height: 180px; overflow-y: auto; white-space: pre; }
+    .diff-old { background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground)); color: var(--vscode-foreground); }
+    .diff-new { background: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground)); color: var(--vscode-foreground); }
 
     /* Markdown */
     .md { font-size: 12.5px; line-height: 1.55; }

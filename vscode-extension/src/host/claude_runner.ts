@@ -20,15 +20,39 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type PermissionMode,
+  type Query,
+} from '@anthropic-ai/claude-agent-sdk';
 
 export interface ClaudeRunnerState {
   busy: boolean;
   queued: number;
+  mode: SupportedPermissionMode;
 }
+
+/** Subset we expose in the UI. We intentionally don't surface `default`
+ *  (which prompts on every tool call) — under the SDK's headless mode
+ *  that path can throw ZodError on some tool calls. `dontAsk` / `auto`
+ *  are SDK internals not meant for end-user toggling. */
+export type SupportedPermissionMode =
+  | 'bypassPermissions'
+  | 'acceptEdits'
+  | 'plan';
 
 export interface ClaudeRunnerOptions {
   topic: string;
+  /** Appended to Claude's system prompt every turn — mirrors the
+   *  `--append-system-prompt "$(cat auto-reply-prompt.md)"` flag the
+   *  TUI passes through `claude-wrap.sh`. Tells Claude it's in a
+   *  cc-connect Room + how to use the cc_* MCP tools. */
+  systemPromptAppend?: string;
+  /** First user prompt of a fresh Session. The TUI feeds Claude the
+   *  contents of `bootstrap-prompt.md` here so it auto-greets the
+   *  Room and enters the `cc_wait_for_mention` loop without the user
+   *  having to type anything. */
+  initialPrompt?: string;
   onEvent: (event: unknown) => void;
   onStateChange: (state: ClaudeRunnerState) => void;
 }
@@ -41,6 +65,10 @@ export interface ClaudeRunnerHandle {
   /** Mint a fresh Session: drop queue, abort in-flight, rotate the
    *  sessionId so the next turn starts clean. */
   resetSession(): void;
+  /** Switch permission mode. Applies to all subsequent turns; if a
+   *  turn is in flight, also calls `query.setPermissionMode(mode)` so
+   *  the live conversation flips immediately. */
+  setPermissionMode(mode: SupportedPermissionMode): void;
   /** Tear the runner down: cancel current + clear queue. Used on
    *  panel dispose. */
   abort(): void;
@@ -56,9 +84,30 @@ export function createClaudeRunner(
   let processing = false;
   let panelClosed = false;
   let currentTurnAc: AbortController | null = null;
+  // The active query handle, if a turn is in flight. Held so
+  // setPermissionMode() can call `currentTurnQ.setPermissionMode(mode)`
+  // and flip the in-progress conversation without aborting it.
+  let currentTurnQ: Query | null = null;
+  // Default mode mirrors the original v0 behaviour. The user can flip
+  // via the UI pill — pure auto-bypass is the most common ergonomic
+  // choice for cc-connect's "trusted Room" model.
+  let currentMode: SupportedPermissionMode = 'bypassPermissions';
+
+  // Auto-greet on Room join — mirrors the TUI's launcher-script path
+  // (`claude-wrap.sh` invokes claude with bootstrap-prompt.md as the
+  // first user message). We deliberately do NOT re-queue this on
+  // `resetSession()` — that would re-broadcast a greeting to peers
+  // every time the user clicks New chat, which is noisy.
+  if (opts.initialPrompt && opts.initialPrompt.trim()) {
+    queue.push(opts.initialPrompt.trim());
+  }
 
   function publishState(): void {
-    opts.onStateChange({ busy: processing, queued: queue.length });
+    opts.onStateChange({
+      busy: processing,
+      queued: queue.length,
+      mode: currentMode,
+    });
   }
 
   async function runOne(prompt: string): Promise<void> {
@@ -67,19 +116,35 @@ export function createClaudeRunner(
     const sessionOpt = hasStarted
       ? { resume: sessionUuid }
       : { sessionId: sessionUuid };
+    const systemPromptOpt =
+      opts.systemPromptAppend && opts.systemPromptAppend.trim()
+        ? {
+            systemPrompt: {
+              type: 'preset' as const,
+              preset: 'claude_code' as const,
+              append: opts.systemPromptAppend,
+            },
+          }
+        : {};
     const q = query({
       prompt,
       options: {
         ...sessionOpt,
+        ...systemPromptOpt,
         pathToClaudeCodeExecutable: claudeBin,
         includeHookEvents: true,
         abortController: ac,
         env: { ...process.env, CC_CONNECT_ROOM: opts.topic },
-        // v0 trust posture: bypass all permission dialogs. Real
-        // per-tool approval UI tracked as design §8 / claude-ui-polish T1.3.
-        permissionMode: 'bypassPermissions',
+        // The user-selected mode. `bypassPermissions` is the v0
+        // default; `acceptEdits` and `plan` are also supported via
+        // the pane-head pill. `default` is intentionally hidden —
+        // the SDK's headless `canUseTool` path can throw ZodError on
+        // some tool calls, and we don't have a webview-side approval
+        // UI yet.
+        permissionMode: currentMode as PermissionMode,
       },
     });
+    currentTurnQ = q;
     hasStarted = true;
     try {
       for await (const evt of q) {
@@ -93,6 +158,7 @@ export function createClaudeRunner(
       }
     } finally {
       if (currentTurnAc === ac) currentTurnAc = null;
+      if (currentTurnQ === q) currentTurnQ = null;
     }
   }
 
@@ -111,6 +177,17 @@ export function createClaudeRunner(
     }
   }
 
+  // Drain the bootstrap (if any) on the next tick. We can't call
+  // processNext() inline here because the caller hasn't received the
+  // handle yet — `onEvent` posts may race with the webview registering
+  // listeners on the WebviewView. setTimeout(0) is enough.
+  if (queue.length > 0) {
+    setTimeout(() => {
+      if (!panelClosed) void processNext();
+    }, 0);
+  }
+  publishState();
+
   return {
     enqueue(prompt: string): void {
       if (panelClosed) return;
@@ -125,6 +202,21 @@ export function createClaudeRunner(
       // exits, the finally block clears `processing`, and
       // `processNext` advances to the next queued prompt (if any).
       currentTurnAc?.abort();
+    },
+    setPermissionMode(mode: SupportedPermissionMode): void {
+      if (panelClosed) return;
+      if (mode === currentMode) return;
+      currentMode = mode;
+      // Flip the in-flight conversation immediately if there is one.
+      // Errors are swallowed: the next turn will pick up the new mode
+      // anyway, so this is best-effort.
+      const live = currentTurnQ;
+      if (live) {
+        void live.setPermissionMode(mode as PermissionMode).catch(() => {
+          /* SDK may reject if the turn already finished — fine */
+        });
+      }
+      publishState();
     },
     resetSession(): void {
       if (panelClosed) return;

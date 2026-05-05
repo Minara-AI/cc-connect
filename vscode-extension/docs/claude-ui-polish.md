@@ -68,7 +68,7 @@ already exposes `q.interrupt()` and we already track an
 
 **Effort**: 1–2 hours.
 
-### ☐ T1.3 — Permission-mode toggle ("Edit automatically" / "Ask before edits")
+### ◐ T1.3 — Permission-mode toggle ("Edit automatically" / "Ask before edits") — pill shipped, inline approval bubble for `default` deferred
 
 **Pattern observed**: A toggle pill in the toolbar at the bottom of
 the chat: "Edit automatically" | "Ask before edits" | (plan-mode).
@@ -170,7 +170,7 @@ picker.
 
 **Effort**: 1 hour.
 
-### ☐ T2.3 — Conversation history per Room (`⏰` icon)
+### ☑ T2.3 — Conversation history per Room (`⏰` icon) — pending commit
 
 **Pattern observed**: A history icon opens a list of past Claude
 conversations (session by session). Click one → load it into the
@@ -209,7 +209,7 @@ closing the Room.
 
 **Effort**: 1 hour.
 
-### ☐ T2.5 — Conversation title (auto-generated summary)
+### ◐ T2.5 — Conversation title (auto-generated summary) — v0 shipped (first-prompt-60 chars after stripping system wrappers); v1 (Claude-summarized) deferred
 
 **Pattern observed**: The conversation has a title at the top
 ("先step4"). Looks user-set or auto-summarized from first prompt.
@@ -227,7 +227,7 @@ titles help navigation.
 
 ## Tier 3 — polish / nice-to-have
 
-### ☐ T3.1 — File-reference chips in user prompts
+### ☑ T3.1 — File-reference chips in user prompts — pending commit
 
 **Pattern observed**: Files mentioned in the prompt appear as small
 clickable chips ("📄 CLAUDE.md") that open the file in the editor
@@ -245,7 +245,7 @@ click instead of Cmd-click navigation.
 
 **Effort**: 2 hours.
 
-### ☐ T3.2 — Tool call IN/OUT layout (vs current single card)
+### ☑ T3.2 — Tool call IN/OUT layout (vs current single card) — pending commit
 
 **Pattern observed**: Tool calls render as two stacked blocks
 labeled `IN` (the input/command) and `OUT` (the result), with a
@@ -305,21 +305,40 @@ cc-connect's scope or are already covered:
 
 ## Progress (2026-05-05 batch)
 
-7 of 13 items shipped this session:
+12 of 13 items shipped this session:
 
 - ☑ T1.1 step timeline · ☑ T1.2 stop · ☑ T1.4 queue pill ·
   ☑ T1.5 thinking
-- ☑ T2.1 slash · ☑ T2.2 attach · ☑ T2.4 new chat
+- ◐ T1.3 permission pill (auto / ask edits / plan modes; inline
+  bubble for `default` deferred)
+- ☑ T2.1 slash · ☑ T2.2 attach · ☑ T2.3 history · ☑ T2.4 new chat
+- ◐ T2.5 titles (v0 first-prompt; v1 Claude-summarized deferred)
+- ☑ T3.1 file-ref chips · ☑ T3.2 IN/OUT layout · ☑ T3.3 (rolled into T1.1)
 
-Remaining (in priority order from below):
+Plus (post-plan additions in this batch):
 
-- ☐ T1.3 permission UI (deferred — biggest single feature; the
-  inline approval bubble + canUseTool path is non-trivial under
-  the headless ZodError constraint)
-- ☐ T2.3 history · ☐ T2.5 titles (paired — title display only
-  becomes useful once history exists)
-- ☐ T3.1 file-ref chips · ☐ T3.2 IN/OUT layout · ☐ T3.3 already
-  rolled into T1.1
+- ☑ Webview message-buffer race fix — listener installed at script
+  load before React mounts, drains buffered messages in useEffect
+- ☑ Chat layout — own messages right-aligned with iMessage-style
+  rounded bubble; peers stay left-aligned
+- ☑ Tool card refactor to VSCode-native styling: badge / widget /
+  diffEditor tokens; per-tool codicons (Read=file-code, Edit=edit,
+  Bash=terminal, …)
+- ☑ Active-editor chip — Claude input shows current VSCode active
+  file; click → inserts `@<workspace-relative-path>` into the draft
+- ☑ Launcher-parity prompts — `bootstrap-prompt.md` +
+  `auto-reply-prompt.md` from `layouts/` are now used as
+  `initialPrompt` + `systemPromptAppend` so Claude auto-greets and
+  enters the listener loop on Room join
+
+Remaining:
+
+- ☐ T1.3-v1 inline approval bubble for `default` mode (canUseTool
+  path requires a webview-side approval dialog; gated on resolving
+  the SDK's headless ZodError on `default`)
+- ◐ T2.5-v1 Claude-summarized titles (4h — call SDK once on session
+  close to summarise; paired with T1.3 quota concerns)
+- ☐ T3.4 voice (out of scope per design)
 
 ## Suggested implementation order
 

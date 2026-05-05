@@ -1,7 +1,12 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Chat } from './Chat';
-import { Claude, type ClaudeRunnerState } from './Claude';
+import {
+  Claude,
+  type ClaudeRunnerState,
+  type SessionMetaLite,
+  type SupportedPermissionMode,
+} from './Claude';
 import type { Message } from './types';
 
 declare global {
@@ -16,6 +21,19 @@ declare global {
 
 const vscode = window.acquireVsCodeApi();
 
+// Capture every host→webview message starting at script load, BEFORE
+// React mounts. VSCode buffers postMessage()s the host sent while the
+// webview was still loading, then dispatches them at script-execute
+// time — that fires *before* React's useEffect attaches its listener,
+// so an early backfill (Room messages, room:state, claude history)
+// would otherwise be dropped silently. The component drains this
+// buffer in its first effect.
+const earlyMessages: MessageEvent[] = [];
+let earlyHandler: ((e: MessageEvent) => void) | null = (e: MessageEvent) => {
+  earlyMessages.push(e);
+};
+window.addEventListener('message', earlyHandler);
+
 type Tab = 'chat' | 'claude';
 
 function App(): React.ReactElement {
@@ -27,10 +45,25 @@ function App(): React.ReactElement {
   const [claudeState, setClaudeState] = React.useState<ClaudeRunnerState>({
     busy: false,
     queued: 0,
+    mode: 'bypassPermissions',
   });
   const [activeTab, setActiveTab] = React.useState<Tab>('chat');
   const [chatUnread, setChatUnread] = React.useState(0);
   const [claudeUnread, setClaudeUnread] = React.useState(0);
+  const [historySessions, setHistorySessions] = React.useState<
+    SessionMetaLite[]
+  >([]);
+  const [activeEditor, setActiveEditor] = React.useState<{
+    path: string;
+    basename: string;
+  } | null>(null);
+  // Live event stream during normal use; replaced by transcript
+  // events when the user picks a past conversation. Reset to live
+  // when they hit "return to live" or "new chat".
+  const [viewingSessionId, setViewingSessionId] = React.useState<
+    string | undefined
+  >(undefined);
+  const liveEventsRef = React.useRef<unknown[]>([]);
   // Track active tab via ref so async message handlers see the
   // current value without re-binding the listener on each switch.
   const activeTabRef = React.useRef(activeTab);
@@ -40,6 +73,11 @@ function App(): React.ReactElement {
     if (activeTab === 'claude') setClaudeUnread(0);
   }, [activeTab]);
 
+  const viewingRef = React.useRef<string | undefined>(undefined);
+  React.useEffect(() => {
+    viewingRef.current = viewingSessionId;
+  }, [viewingSessionId]);
+
   React.useEffect(() => {
     const onMsg = (event: MessageEvent): void => {
       const msg = (event.data ?? {}) as { type?: string; body?: unknown };
@@ -48,11 +86,14 @@ function App(): React.ReactElement {
       } else if (msg.type === 'room:reset') {
         setMessages([]);
         setClaudeEvents([]);
-        setClaudeState({ busy: false, queued: 0 });
+        liveEventsRef.current = [];
+        setClaudeState((prev) => ({ ...prev, busy: false, queued: 0 }));
         setTopic('');
         setStatus('switching…');
         setChatUnread(0);
         setClaudeUnread(0);
+        setHistorySessions([]);
+        setViewingSessionId(undefined);
       } else if (msg.type === 'room:state') {
         const b = (msg.body ?? {}) as { topic?: string; myNick?: string };
         if (b.topic) setTopic(b.topic);
@@ -73,7 +114,13 @@ function App(): React.ReactElement {
           msg.body && typeof msg.body === 'object'
             ? { ...(msg.body as object), _receivedAt: Date.now() }
             : msg.body;
-        setClaudeEvents((prev) => [...prev, stamped]);
+        // Always append to the live buffer so "return to live"
+        // restores everything Claude said while we were browsing
+        // history.
+        liveEventsRef.current = [...liveEventsRef.current, stamped];
+        if (!viewingRef.current) {
+          setClaudeEvents(liveEventsRef.current);
+        }
         if (activeTabRef.current !== 'claude') {
           // Only count assistant-text-bearing events as "unread"; the
           // hook/system spam is too noisy to surface in the badge.
@@ -84,9 +131,43 @@ function App(): React.ReactElement {
         }
       } else if (msg.type === 'claude:state') {
         const s = msg.body as ClaudeRunnerState;
-        setClaudeState({ busy: !!s.busy, queued: s.queued ?? 0 });
+        setClaudeState((prev) => ({
+          busy: !!s.busy,
+          queued: s.queued ?? 0,
+          mode: s.mode ?? prev.mode,
+        }));
+      } else if (msg.type === 'editor:active') {
+        const b = msg.body as
+          | { path: string; basename: string }
+          | null
+          | undefined;
+        setActiveEditor(b ?? null);
+      } else if (msg.type === 'history:list-result') {
+        const list = (msg.body ?? []) as SessionMetaLite[];
+        setHistorySessions(list);
+      } else if (msg.type === 'history:loaded') {
+        const b = msg.body as {
+          sessionId: string;
+          events: unknown[];
+          error?: string;
+        };
+        if (b.error) {
+          setStatus(`history load failed: ${b.error}`);
+          return;
+        }
+        setViewingSessionId(b.sessionId);
+        setClaudeEvents(b.events);
       }
     };
+    // Drain any messages buffered between script-load and now, then
+    // detach the early-handler so duplicates can't fire.
+    if (earlyHandler) {
+      window.removeEventListener('message', earlyHandler);
+      earlyHandler = null;
+    }
+    for (const buffered of earlyMessages) onMsg(buffered);
+    earlyMessages.length = 0;
+
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, []);
@@ -101,6 +182,29 @@ function App(): React.ReactElement {
 
   const onPrompt = (body: string): void => {
     vscode.postMessage({ type: 'claude:prompt', body });
+    // Synthesize a local-only event so the prompt renders in the
+    // Claude log immediately. SDK events stream back without echoing
+    // the user side, and we want chips + scrollback parity.
+    const synthetic = { type: 'cc:user-prompt', body, _receivedAt: Date.now() };
+    liveEventsRef.current = [...liveEventsRef.current, synthetic];
+    setClaudeEvents(liveEventsRef.current);
+  };
+
+  const onOpenFile = (path: string): void => {
+    vscode.postMessage({ type: 'prompt:open-file', body: path });
+  };
+
+  const onRequestHistoryList = (): void => {
+    vscode.postMessage({ type: 'history:list' });
+  };
+
+  const onLoadHistory = (sessionId: string): void => {
+    vscode.postMessage({ type: 'history:load', body: sessionId });
+  };
+
+  const onExitHistory = (): void => {
+    setViewingSessionId(undefined);
+    setClaudeEvents(liveEventsRef.current);
   };
 
   const onInterrupt = (): void => {
@@ -109,8 +213,17 @@ function App(): React.ReactElement {
 
   const onResetSession = (): void => {
     setClaudeEvents([]);
-    setClaudeState({ busy: false, queued: 0 });
+    liveEventsRef.current = [];
+    setViewingSessionId(undefined);
+    setClaudeState((prev) => ({ ...prev, busy: false, queued: 0 }));
     vscode.postMessage({ type: 'claude:reset-session' });
+  };
+
+  const onPermissionMode = (mode: SupportedPermissionMode): void => {
+    // Optimistic update so the pill flips instantly. Host's
+    // claude:state will reconcile on the next publishState() tick.
+    setClaudeState((prev) => ({ ...prev, mode }));
+    vscode.postMessage({ type: 'claude:permission-mode', body: mode });
   };
 
   return (
@@ -171,6 +284,16 @@ function App(): React.ReactElement {
             onPrompt={onPrompt}
             onInterrupt={onInterrupt}
             onResetSession={onResetSession}
+            onOpenFile={onOpenFile}
+            onPermissionMode={onPermissionMode}
+            activeEditor={activeEditor}
+            history={{
+              viewing: viewingSessionId,
+              sessions: historySessions,
+              onRequestList: onRequestHistoryList,
+              onLoad: onLoadHistory,
+              onExit: onExitHistory,
+            }}
           />
         </div>
       </div>

@@ -88,6 +88,20 @@ dev host so they don't pollute your test session.
   Claude runner does this via `query({ options: { env: { ...,
   CC_CONNECT_ROOM: topic } } })`. Don't pass `env: {}` (would clobber
   PATH / OAuth / HOME).
+- **Launcher-parity prompts**. The TUI feeds claude two files via
+  `layouts/claude-wrap.sh`:
+  `auto-reply-prompt.md` → `--append-system-prompt` and
+  `bootstrap-prompt.md` → first user prompt. The extension copies
+  both into `dist/layouts/` at `compile:host` time and uses them as
+  `systemPromptAppend` + `initialPrompt` in `claude_runner.ts` so
+  Claude knows it's in a Room, knows the cc_* MCP tools, and
+  auto-greets on join. **Don't fork these prompts** — keep
+  `layouts/*.md` as the single source so TUI and extension stay
+  in lockstep. Re-run `bun run compile` after editing them.
+- **Bootstrap fires once per runner, not on `resetSession()`**.
+  Re-queueing the greeting on every New chat would re-broadcast
+  hello to peers. New chat = silent fresh session; user must type
+  to re-engage.
 - **`pathToClaudeCodeExecutable`** must point at
   `~/.local/bin/claude`. macOS GUI launches don't inherit the user's
   shell PATH (launchctl env), and the SDK's bundled native binary
