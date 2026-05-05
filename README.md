@@ -357,6 +357,35 @@ Bugs and feature requests: [GitHub Issues](https://github.com/Minara-AI/cc-conne
 
 ## Release process
 
+### Release tag namespaces
+
+cc-connect ships **two independent artifacts** with their own release cadence. The namespace lives in the tag, not in separate repos — pick the right tag pattern for what you're releasing:
+
+| Artifact | Tag pattern | What it ships | CI workflow |
+|---|---|---|---|
+| **cc-connect CLI / TUI** (Rust binaries) | `v0.1.0`, `v0.2.0-rc.1` | `cc-connect`, `cc-connect-hook`, `cc-chat-ui` tarballs per platform attached to the GitHub release | [`release.yml`](./.github/workflows/release.yml) |
+| **VSCode extension** | `vscode-extension-v0.1.0`, `vscode-extension-v0.2.0-rc.1` | `cc-connect-vscode-<version>.vsix` attached to the GitHub release | [`vscode-extension-release.yml`](./.github/workflows/vscode-extension-release.yml) |
+
+The two pipelines are completely independent — bumping one never triggers the other. The version numbers don't have to track each other either; the extension declares the minimum cc-connect binary it needs through `package.json` (and the [VSCode usage section](#use-it-in-vscode-recommended) makes the dependency explicit for users). Cutting a release:
+
+```bash
+# CLI / TUI
+git tag v0.2.0
+git push origin v0.2.0          # → release.yml builds tarballs
+
+# VSCode extension (bump vscode-extension/package.json::version first —
+# the workflow refuses to build if the tag and package.json disagree)
+$EDITOR vscode-extension/package.json   # version: "0.1.0" → "0.2.0"
+git add vscode-extension/package.json
+git commit -m "chore(vscode-extension): bump to 0.2.0"
+git tag vscode-extension-v0.2.0
+git push origin main vscode-extension-v0.2.0   # → vscode-extension-release.yml packages .vsix
+```
+
+The extension workflow refuses to build if the tag version doesn't match `vscode-extension/package.json::version` — keeps the on-disk version, the tag, and the .vsix filename in lockstep.
+
+### Install / uninstall surface contract
+
 `cc-connect uninstall` and `cc-connect upgrade` are user-facing promises: a clean wipe and a clean reinstall. Honoring those promises is a release-time discipline.
 
 **Every release MUST keep the cleanup surface in sync with the install surface.** The cleanup lives in [`crates/cc-connect/src/lifecycle.rs`](./crates/cc-connect/src/lifecycle.rs); when a release adds anything to the install surface — a new binary, a new `~/.claude/settings.json` key, a new file under `~/.cc-connect/`, a new MCP tool that registers itself somewhere — the matching removal must land in `lifecycle.rs` in the same PR.

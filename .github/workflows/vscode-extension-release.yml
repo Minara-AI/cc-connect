@@ -1,0 +1,125 @@
+name: VSCode Extension Release
+
+# Triggered when a `vscode-extension-v*` tag is pushed (e.g.
+# vscode-extension-v0.1.0, vscode-extension-v0.2.0-rc.1). Builds the
+# extension, packages it as a .vsix, and attaches the artifact to a
+# GitHub release.
+#
+# This is the namespace-isolated counterpart to release.yml, which
+# handles the Rust binaries on `v*` tags. The two release pipelines
+# are independent on purpose — see README "Release tag namespaces".
+#
+# Stage B (marketplace publish via `vsce publish`) is intentionally
+# not wired here yet. When the extension is mature enough to ship to
+# the marketplace, store an Azure DevOps PAT as the GitHub secret
+# `VSCE_PAT` and add a final `bunx @vscode/vsce publish` step gated
+# on `!contains(tag, '-')` (i.e. only stable versions auto-publish).
+
+on:
+  push:
+    tags:
+      - "vscode-extension-v*.*.*"
+      - "vscode-extension-v*.*.*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. vscode-extension-v0.1.0). Must already exist on origin."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: package + release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Validate tag matches package.json version
+        id: meta
+        working-directory: vscode-extension
+        shell: bash
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          # Strip the `vscode-extension-v` prefix → 0.1.0 / 0.2.0-rc.1
+          tag_version="${ref#vscode-extension-v}"
+          pkg_version=$(node -p "require('./package.json').version")
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match package.json version ($pkg_version). Bump package.json then retag."
+            exit 1
+          fi
+          echo "version=${tag_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        working-directory: vscode-extension
+        run: bun install --frozen-lockfile
+
+      - name: Compile extension
+        working-directory: vscode-extension
+        run: bun run compile
+
+      - name: Package .vsix
+        id: pkg
+        working-directory: vscode-extension
+        shell: bash
+        run: |
+          # vsce package reads the version from package.json (already
+          # validated against the tag) and writes
+          # `cc-connect-vscode-${version}.vsix` by default.
+          bunx @vscode/vsce package
+          version="${{ steps.meta.outputs.version }}"
+          vsix="cc-connect-vscode-${version}.vsix"
+          if [ ! -f "$vsix" ]; then
+            echo "::error::Expected $vsix not found after vsce package."
+            ls -la *.vsix || true
+            exit 1
+          fi
+          shasum -a 256 "$vsix" > "${vsix}.sha256"
+          echo "vsix=${vsix}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: |
+            vscode-extension/*.vsix
+            vscode-extension/*.vsix.sha256
+          if-no-files-found: error
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: VSCode extension v${{ steps.meta.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            vscode-extension/*.vsix
+            vscode-extension/*.vsix.sha256
+          body: |
+            cc-connect VSCode extension **v${{ steps.meta.outputs.version }}**.
+
+            ## Install
+
+            Download the `.vsix` below, then:
+
+            ```bash
+            code --install-extension cc-connect-vscode-${{ steps.meta.outputs.version }}.vsix
+            ```
+
+            **Requires the cc-connect CLI to already be installed** — the extension shells out to `~/.local/bin/cc-connect`. Run `./install.sh` from the repo root if you haven't yet.
+
+            See the [VSCode usage guide](https://github.com/Minara-AI/cc-connect#use-it-in-vscode-recommended) in the README.
+
+            ## Verify
+
+            ```bash
+            shasum -a 256 -c cc-connect-vscode-*.vsix.sha256
+            ```

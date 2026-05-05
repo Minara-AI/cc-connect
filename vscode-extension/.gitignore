@@ -3,8 +3,10 @@ out/
 dist/
 *.vsix
 .vscode-test/
-bun.lock
 .omc/
 scripts/*.js
 scripts/*.js.map
+# `bun.lock` is intentionally tracked — release CI uses
+# `bun install --frozen-lockfile`, so the committed lockfile is what
+# guarantees reproducible .vsix builds. Mirrors chat-ui/bun.lock.
 

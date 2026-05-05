@@ -58,6 +58,25 @@ scripts/smoke-test-bg.sh                   # background host-daemon path
 
 ## Release checklist (read before tagging or merging release-shaped PRs)
 
+### Tag namespaces (pick the right one)
+
+- `v0.X.Y` / `v0.X.Y-rc.1` → ships **Rust binaries** via
+  `.github/workflows/release.yml` (cc-connect, cc-connect-hook,
+  cc-chat-ui tarballs).
+- `vscode-extension-v0.X.Y` / `…-rc.1` → ships the **VSCode
+  extension .vsix** via
+  `.github/workflows/vscode-extension-release.yml`. The workflow
+  refuses to package if the tag's version doesn't match
+  `vscode-extension/package.json::version`, so bump that file in the
+  same commit you tag from.
+
+The two pipelines are independent; tagging one does not trigger the
+other. The extension declares its required minimum cc-connect binary
+version in its `package.json` so users get a clear error when they
+mix incompatible versions.
+
+### Install / uninstall surface contract
+
 Every release MUST keep `cc-connect uninstall` able to reverse the new
 install. The uninstall + upgrade flows promise users they can wipe a
 machine clean and start fresh; if a release adds new on-disk state but
