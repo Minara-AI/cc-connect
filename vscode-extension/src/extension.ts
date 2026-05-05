@@ -12,39 +12,72 @@ import {
 import { ccDrop, ccSend } from './host/ipc';
 import { tailLog, type LogTailHandle } from './host/log_tail';
 import { shouldWakeClaude } from './host/mention';
+import { RoomsProvider } from './sidebar/RoomsProvider';
 import type { Message } from './types';
 
+let roomsProvider: RoomsProvider | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
+  roomsProvider = new RoomsProvider();
   context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('cc-connect.rooms', roomsProvider),
     vscode.commands.registerCommand('cc-connect.hello', () => {
       vscode.window.showInformationMessage('cc-connect: hello');
     }),
-    vscode.commands.registerCommand('cc-connect.openRoom', () => {
-      void openRoomFromPicker(context);
-    }),
+    vscode.commands.registerCommand(
+      'cc-connect.openRoom',
+      (arg?: string | { topic: string }) => {
+        const topic = resolveTopicArg(arg);
+        void openRoom(context, topic);
+      },
+    ),
     vscode.commands.registerCommand('cc-connect.startRoom', () => {
       void startRoom(context);
     }),
     vscode.commands.registerCommand('cc-connect.joinRoom', () => {
       void joinRoom(context);
     }),
-    vscode.commands.registerCommand('cc-connect.showTicket', () => {
-      void showTicket();
-    }),
-    vscode.commands.registerCommand('cc-connect.stopRoom', () => {
-      void stopRoom();
+    vscode.commands.registerCommand(
+      'cc-connect.showTicket',
+      (arg?: string | { topic: string }) => {
+        void showTicket(resolveTopicArg(arg));
+      },
+    ),
+    vscode.commands.registerCommand(
+      'cc-connect.stopRoom',
+      (arg?: string | { topic: string }) => {
+        void stopRoom(resolveTopicArg(arg));
+      },
+    ),
+    vscode.commands.registerCommand('cc-connect.refreshRooms', () => {
+      roomsProvider?.refresh();
     }),
   );
 }
 
 export function deactivate(): void {}
 
-async function openRoomFromPicker(
+/** Commands invoked from the tree get either a string topic (when the
+ *  TreeItem.command.arguments is set explicitly) or the tree entry
+ *  itself (for context-menu actions). Normalise both into a topic
+ *  string, or undefined when invoked from the command palette. */
+function resolveTopicArg(
+  arg: string | { topic: string } | undefined,
+): string | undefined {
+  if (typeof arg === 'string') return arg;
+  if (arg && typeof arg === 'object' && typeof arg.topic === 'string') {
+    return arg.topic;
+  }
+  return undefined;
+}
+
+async function openRoom(
   context: vscode.ExtensionContext,
+  topic: string | undefined,
 ): Promise<void> {
-  const topic = await pickTopic();
-  if (!topic) return;
-  openRoomPanelForTopic(context, topic);
+  const t = topic ?? (await pickTopic());
+  if (!t) return;
+  openRoomPanelForTopic(context, t);
 }
 
 async function startRoom(context: vscode.ExtensionContext): Promise<void> {
@@ -72,6 +105,7 @@ async function startRoom(context: vscode.ExtensionContext): Promise<void> {
   void vscode.window.showInformationMessage(
     'cc-connect: Room started. Ticket copied to clipboard.',
   );
+  roomsProvider?.refresh();
   openRoomPanelForTopic(context, topic!);
 }
 
@@ -101,6 +135,7 @@ async function joinRoom(context: vscode.ExtensionContext): Promise<void> {
     );
     return;
   }
+  roomsProvider?.refresh();
   openRoomPanelForTopic(context, topic);
 }
 
@@ -239,8 +274,8 @@ async function pickTopic(): Promise<string | undefined> {
   return picked?.topic;
 }
 
-async function stopRoom(): Promise<void> {
-  const topic = await pickTopic();
+async function stopRoom(topicArg?: string): Promise<void> {
+  const topic = topicArg ?? (await pickTopic());
   if (!topic) return;
   const confirm = await vscode.window.showWarningMessage(
     `Stop daemons for ${topic.slice(0, 12)}…? Peers will lose connection.`,
@@ -282,10 +317,11 @@ async function stopRoom(): Promise<void> {
   void vscode.window.showInformationMessage(
     `cc-connect: ${topic.slice(0, 12)}… stopped.`,
   );
+  roomsProvider?.refresh();
 }
 
-async function showTicket(): Promise<void> {
-  const topic = await pickTopic();
+async function showTicket(topicArg?: string): Promise<void> {
+  const topic = topicArg ?? (await pickTopic());
   if (!topic) return;
   const ticket = readTicketForTopic(topic);
   if (!ticket) {

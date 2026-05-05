@@ -17,14 +17,28 @@
   "categories": ["Other"],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onCommand:cc-connect.hello",
-    "onCommand:cc-connect.openRoom",
-    "onCommand:cc-connect.startRoom",
-    "onCommand:cc-connect.joinRoom",
-    "onCommand:cc-connect.showTicket",
-    "onCommand:cc-connect.stopRoom"
+    "onView:cc-connect.rooms"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cc-connect",
+          "title": "cc-connect",
+          "icon": "media/cc-connect-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "cc-connect": [
+        {
+          "id": "cc-connect.rooms",
+          "name": "Rooms",
+          "icon": "media/cc-connect-activity.svg",
+          "contextualTitle": "cc-connect"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "cc-connect.hello",
@@ -34,12 +48,14 @@
       {
         "command": "cc-connect.startRoom",
         "title": "Start Room",
-        "category": "cc-connect"
+        "category": "cc-connect",
+        "icon": "$(add)"
       },
       {
         "command": "cc-connect.joinRoom",
         "title": "Join Room…",
-        "category": "cc-connect"
+        "category": "cc-connect",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "cc-connect.openRoom",
@@ -49,14 +65,68 @@
       {
         "command": "cc-connect.showTicket",
         "title": "Show Ticket…",
-        "category": "cc-connect"
+        "category": "cc-connect",
+        "icon": "$(clippy)"
       },
       {
         "command": "cc-connect.stopRoom",
         "title": "Stop Room…",
-        "category": "cc-connect"
+        "category": "cc-connect",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "cc-connect.refreshRooms",
+        "title": "Refresh",
+        "category": "cc-connect",
+        "icon": "$(refresh)"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cc-connect.startRoom",
+          "when": "view == cc-connect.rooms",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cc-connect.joinRoom",
+          "when": "view == cc-connect.rooms",
+          "group": "navigation@2"
+        },
+        {
+          "command": "cc-connect.refreshRooms",
+          "when": "view == cc-connect.rooms",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cc-connect.showTicket",
+          "when": "view == cc-connect.rooms && viewItem == room.alive",
+          "group": "inline@1"
+        },
+        {
+          "command": "cc-connect.stopRoom",
+          "when": "view == cc-connect.rooms && viewItem == room.alive",
+          "group": "inline@2"
+        },
+        {
+          "command": "cc-connect.openRoom",
+          "when": "view == cc-connect.rooms",
+          "group": "1_open"
+        },
+        {
+          "command": "cc-connect.showTicket",
+          "when": "view == cc-connect.rooms && viewItem == room.alive",
+          "group": "2_clipboard"
+        },
+        {
+          "command": "cc-connect.stopRoom",
+          "when": "view == cc-connect.rooms && viewItem == room.alive",
+          "group": "3_destructive"
+        }
+      ]
+    }
   },
   "scripts": {
     "compile": "bun run compile:host && bun run compile:webview",
