@@ -71,6 +71,10 @@ function App(): React.ReactElement {
     vscode.postMessage({ type: 'claude:prompt', body });
   };
 
+  const onInterrupt = (): void => {
+    vscode.postMessage({ type: 'claude:interrupt' });
+  };
+
   return (
     <React.Fragment>
       <div className="room-meta">
@@ -82,6 +86,7 @@ function App(): React.ReactElement {
           events={claudeEvents}
           state={claudeState}
           onPrompt={onPrompt}
+          onInterrupt={onInterrupt}
         />
       </div>
     </React.Fragment>

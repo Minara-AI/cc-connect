@@ -11,10 +11,11 @@
 //   - `pathToClaudeCodeExecutable` resolves macOS-GUI launch PATH
 //   - `includeHookEvents: true` exposes hook lifecycle events in the
 //     stream so the Claude panel can render them
-//   - `abortController` for panel-dispose teardown
+//   - per-turn `AbortController` so `interrupt()` can kill the
+//     in-flight turn without tearing down the whole runner
 //
-// Permission UI, mid-turn cancellation beyond panel-close, and
-// MCP cc-connect server registration land in subsequent steps.
+// Permission UI and MCP cc-connect server registration land in
+// subsequent steps.
 
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -33,7 +34,12 @@ export interface ClaudeRunnerOptions {
 }
 
 export interface ClaudeRunnerHandle {
+  /** Enqueue a prompt. Runs after any currently-in-flight turn. */
   enqueue(prompt: string): void;
+  /** Cancel the currently-running turn. Queued items still run. */
+  interrupt(): void;
+  /** Tear the runner down: cancel current + clear queue. Used on
+   *  panel dispose. */
   abort(): void;
 }
 
@@ -42,17 +48,19 @@ export function createClaudeRunner(
 ): ClaudeRunnerHandle {
   const sessionUuid = randomUUID();
   const claudeBin = join(homedir(), '.local', 'bin', 'claude');
-  const ac = new AbortController();
   let hasStarted = false;
   const queue: string[] = [];
   let processing = false;
-  let aborted = false;
+  let panelClosed = false;
+  let currentTurnAc: AbortController | null = null;
 
   function publishState(): void {
     opts.onStateChange({ busy: processing, queued: queue.length });
   }
 
   async function runOne(prompt: string): Promise<void> {
+    const ac = new AbortController();
+    currentTurnAc = ac;
     const sessionOpt = hasStarted
       ? { resume: sessionUuid }
       : { sessionId: sessionUuid };
@@ -64,14 +72,8 @@ export function createClaudeRunner(
         includeHookEvents: true,
         abortController: ac,
         env: { ...process.env, CC_CONNECT_ROOM: opts.topic },
-        // v0 trust posture: bypass all permission dialogs. The headless
-        // SDK path has nowhere to render an approval prompt — even with
-        // a `canUseTool` callback some flows still try to surface a
-        // dialog and crash the turn with a ZodError. `bypassPermissions`
-        // skips the permission layer entirely so cc_at (Claude's path
-        // back into the Room) and dev tools (Read/Edit/Bash) just work.
-        // Real per-tool approval UI in the Claude panel is deferred —
-        // see design doc §8 ("Permission approvals UI").
+        // v0 trust posture: bypass all permission dialogs. Real
+        // per-tool approval UI tracked as design §8 / claude-ui-polish T1.3.
         permissionMode: 'bypassPermissions',
       },
     });
@@ -86,11 +88,13 @@ export function createClaudeRunner(
       if (!/abort/i.test(msg)) {
         opts.onEvent({ type: 'sdk:error', error: msg });
       }
+    } finally {
+      if (currentTurnAc === ac) currentTurnAc = null;
     }
   }
 
   async function processNext(): Promise<void> {
-    if (processing || aborted) return;
+    if (processing || panelClosed) return;
     const next = queue.shift();
     if (next === undefined) return;
     processing = true;
@@ -100,23 +104,29 @@ export function createClaudeRunner(
     } finally {
       processing = false;
       publishState();
-      if (queue.length > 0 && !aborted) void processNext();
+      if (queue.length > 0 && !panelClosed) void processNext();
     }
   }
 
   return {
     enqueue(prompt: string): void {
-      if (aborted) return;
+      if (panelClosed) return;
       const trimmed = prompt.trim();
       if (!trimmed) return;
       queue.push(trimmed);
       publishState();
       void processNext();
     },
+    interrupt(): void {
+      // Abort only the current turn. The for-await loop in runOne
+      // exits, the finally block clears `processing`, and
+      // `processNext` advances to the next queued prompt (if any).
+      currentTurnAc?.abort();
+    },
     abort(): void {
-      aborted = true;
+      panelClosed = true;
       queue.length = 0;
-      ac.abort();
+      currentTurnAc?.abort();
       publishState();
     },
   };

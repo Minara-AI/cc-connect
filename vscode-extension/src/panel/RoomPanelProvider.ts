@@ -109,6 +109,9 @@ export class RoomPanelProvider implements vscode.WebviewViewProvider {
           const body = typeof msg.body === 'string' ? msg.body.trim() : '';
           if (!body) return;
           this.runner?.enqueue(body);
+        } else if (msg.type === 'claude:interrupt') {
+          // Cancel the in-flight turn only; queued prompts still run.
+          this.runner?.interrupt();
         }
       },
     );
@@ -243,6 +246,9 @@ function roomHtml(webview: vscode.Webview, distRoot: vscode.Uri): string {
     .send-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, var(--vscode-textLink-foreground)); opacity: 0.9; }
     .send-btn:disabled { opacity: 0.25; cursor: not-allowed; }
     .send-btn svg { display: block; }
+    .stop-btn { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border-radius: 50%; background: var(--vscode-errorForeground, #d04444); color: var(--vscode-editor-background); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.12s; }
+    .stop-btn:hover { opacity: 0.85; }
+    .stop-btn svg { display: block; }
     /* Mention popup — anchored above the chat input */
     .mention-popup { position: absolute; bottom: calc(100% - 4px); left: 10px; right: 10px; max-height: 160px; overflow-y: auto; background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background, var(--vscode-input-background))); border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border)); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); z-index: 10; padding: 2px; font-size: 12px; }
     .mention-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; user-select: none; }

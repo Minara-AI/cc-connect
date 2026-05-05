@@ -18,12 +18,14 @@ interface ClaudeProps {
   events: unknown[];
   state: ClaudeRunnerState;
   onPrompt?: (body: string) => void;
+  onInterrupt?: () => void;
 }
 
 export function Claude({
   events,
   state,
   onPrompt,
+  onInterrupt,
 }: ClaudeProps): React.ReactElement {
   const blocks = React.useMemo(() => processClaude(events), [events]);
   // Hide successful hook rows — pending and failed still surface.
@@ -87,16 +89,28 @@ export function Claude({
             placeholder={placeholder}
             rows={1}
           />
-          <button
-            type="button"
-            className="send-btn"
-            onClick={submit}
-            disabled={draft.trim().length === 0}
-            aria-label="Send"
-            title="Send (Enter)"
-          >
-            <SendIcon />
-          </button>
+          {state.busy && onInterrupt ? (
+            <button
+              type="button"
+              className="stop-btn"
+              onClick={onInterrupt}
+              aria-label="Stop"
+              title="Stop the current turn"
+            >
+              <StopIcon />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="send-btn"
+              onClick={submit}
+              disabled={draft.trim().length === 0}
+              aria-label="Send"
+              title="Send (Enter)"
+            >
+              <SendIcon />
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -248,6 +262,20 @@ function SendIcon(): React.ReactElement {
       aria-hidden="true"
     >
       <path d="M1.7 1.4a.6.6 0 0 1 .7-.05l11.7 6a.6.6 0 0 1 0 1.06l-11.7 6.1a.6.6 0 0 1-.86-.7l1.5-4.95a.6.6 0 0 1 .47-.42l5.34-.93a.2.2 0 0 0 0-.4l-5.34-.93a.6.6 0 0 1-.47-.42l-1.5-4.95a.6.6 0 0 1 .16-.6z" />
+    </svg>
+  );
+}
+
+function StopIcon(): React.ReactElement {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="12"
+      height="12"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="10" height="10" rx="1.5" />
     </svg>
   );
 }
