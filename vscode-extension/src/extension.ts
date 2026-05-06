@@ -3,6 +3,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
+  checkCcConnectBinary,
+  type BinaryHealth,
+} from './host/binaryVersion';
+import {
   startChatDaemon,
   startHostBg,
   stopChatDaemon,
@@ -14,44 +18,45 @@ import { RoomsProvider } from './sidebar/RoomsProvider';
 let roomsProvider: RoomsProvider | undefined;
 let roomPanelProvider: RoomPanelProvider | undefined;
 
-const CC_BIN = path.join(os.homedir(), '.local', 'bin', 'cc-connect');
-
-/** Verify the cc-connect binary the extension shells out to is present
- *  and executable. Used to gate the Rooms welcome view (`viewsWelcome`)
- *  and the start/join commands so the user gets a clear setup
- *  walkthrough instead of an opaque ENOENT toast. */
-function isCcConnectInstalled(): boolean {
-  try {
-    fs.accessSync(CC_BIN, fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function refreshSetupContext(): boolean {
-  const installed = isCcConnectInstalled();
+async function refreshSetupContext(): Promise<BinaryHealth> {
+  const health = await checkCcConnectBinary();
   void vscode.commands.executeCommand(
     'setContext',
     'cc-connect.setupRequired',
-    !installed,
+    !health.ok,
   );
-  return installed;
+  return health;
 }
 
 async function ensureSetup(): Promise<boolean> {
-  if (refreshSetupContext()) return true;
-  // Don't surface yet another toast — the welcome view in the Rooms
-  // tree shows the actionable guidance. Just nudge the user there.
+  const health = await refreshSetupContext();
+  if (health.ok) return true;
+  // Surface a toast tailored to the failure mode. The Rooms tree's
+  // viewsWelcome already shows the static fallback; this is the
+  // mid-flow nudge when the user clicks Start/Join Room while
+  // unhealthy.
+  let message: string;
+  switch (health.reason) {
+    case 'missing':
+      message =
+        'cc-connect binary not found at ~/.local/bin/cc-connect. Run setup first.';
+      break;
+    case 'outdated':
+      message = `cc-connect binary is ${health.version}, but this extension needs ${health.required} or newer. Run \`cc-connect upgrade\` (or re-run the bootstrap installer).`;
+      break;
+    case 'unreadable':
+      message = `Could not read cc-connect version (${health.detail}). The binary may be broken; try reinstalling.`;
+      break;
+  }
   const action = await vscode.window.showWarningMessage(
-    'cc-connect binary not found at ~/.local/bin/cc-connect. Run setup first.',
+    message,
     'Open setup guide',
-    'I just installed it',
+    'I just upgraded',
   );
   if (action === 'Open setup guide') {
     await vscode.commands.executeCommand('cc-connect.openSetup');
-  } else if (action === 'I just installed it') {
-    refreshSetupContext();
+  } else if (action === 'I just upgraded') {
+    await refreshSetupContext();
     roomsProvider?.refresh();
   }
   return false;
@@ -63,8 +68,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Drive the Rooms view's welcome state — `viewsWelcome` (in
   // package.json) toggles between "needs setup" and "no rooms yet"
-  // markdown based on this context key.
-  refreshSetupContext();
+  // markdown based on this context key. Fire-and-forget: the welcome
+  // view defaults to "needs setup" until the probe completes a moment
+  // later, which is fine — first-render delay is < 100ms.
+  void refreshSetupContext();
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('cc-connect.rooms', roomsProvider),
@@ -101,7 +108,7 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand('cc-connect.refreshRooms', () => {
-      refreshSetupContext();
+      void refreshSetupContext();
       roomsProvider?.refresh();
     }),
     vscode.commands.registerCommand('cc-connect.openSetup', () => {

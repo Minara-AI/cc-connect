@@ -9,7 +9,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+# Tracks the latest release tag (drop the `v` prefix). Bumped together
+# with `git tag v...` so `cc-connect --version` reports the same number
+# users downloaded. The CI release.yml derives the artifact version
+# from the tag, NOT this field — keeping them in lockstep is hygiene
+# for users running `cc-connect --version` and for the VSCode
+# extension's binary-version compatibility check (see
+# vscode-extension/src/host/binaryVersion.ts).
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Minara-AI/cc-connect"
